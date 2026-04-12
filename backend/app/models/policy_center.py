@@ -56,6 +56,17 @@ class PolicyEventRecord(BaseModel):
     message: str
 
 
+class PolicyEvidenceRecord(BaseModel):
+    policy_id: str
+    timestamp: str
+    action: str
+    compliance: PolicyCompliance
+    live_state: PolicyLiveState
+    relevant_flows: list[dict[str, object]]
+    flow_count: int
+    summary: str
+
+
 class PolicyPreview(BaseModel):
     policy: PolicyRecord
     mapped_enforcement_action: str

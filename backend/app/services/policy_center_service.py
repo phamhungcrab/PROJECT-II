@@ -12,6 +12,7 @@ from pydantic import BaseModel
 from app.models.policy_center import (
     PolicyCompliance,
     PolicyDesiredState,
+    PolicyEvidenceRecord,
     PolicyEventRecord,
     PolicyLiveState,
     PolicyPreview,
@@ -38,6 +39,7 @@ POLICY_DEFINITIONS: dict[str, dict[str, object]] = {
         ],
         "risk": "Low risk. Restores the baseline forwarding path.",
         "cookie_flags": ("base_normal",),
+        "expected_cookies": (OVSFlowService.NORMAL_COOKIE,),
         "seed_enabled": True,
     },
     "block_ping_h1_h2": {
@@ -57,6 +59,10 @@ POLICY_DEFINITIONS: dict[str, dict[str, object]] = {
         ],
         "risk": "Medium risk. Ping-based reachability checks will fail while active.",
         "cookie_flags": ("block_ping_1", "block_ping_2"),
+        "expected_cookies": (
+            OVSFlowService.BLOCK_PING_COOKIE_1,
+            OVSFlowService.BLOCK_PING_COOKIE_2,
+        ),
         "seed_enabled": False,
     },
     "block_http_h1_h2": {
@@ -76,6 +82,10 @@ POLICY_DEFINITIONS: dict[str, dict[str, object]] = {
         ],
         "risk": "Medium risk. Application checks over TCP/80 will fail while active.",
         "cookie_flags": ("block_http_1", "block_http_2"),
+        "expected_cookies": (
+            OVSFlowService.BLOCK_HTTP_COOKIE_1,
+            OVSFlowService.BLOCK_HTTP_COOKIE_2,
+        ),
         "seed_enabled": False,
     },
     "isolate_h1": {
@@ -95,6 +105,10 @@ POLICY_DEFINITIONS: dict[str, dict[str, object]] = {
         ],
         "risk": "High impact for the host pair. Host-to-host IPv4 traffic is denied.",
         "cookie_flags": ("isolate_h1_1", "isolate_h1_2"),
+        "expected_cookies": (
+            OVSFlowService.ISOLATE_H1_COOKIE_1,
+            OVSFlowService.ISOLATE_H1_COOKIE_2,
+        ),
         "seed_enabled": False,
     },
 }
@@ -108,6 +122,7 @@ def _model_to_dict(model: BaseModel) -> dict[str, object]:
 
 class PolicyCenterService:
     MAX_EVENTS = 200
+    MAX_EVIDENCE = 500
 
     def __init__(
         self,
@@ -183,7 +198,15 @@ class PolicyCenterService:
             )
             events = self._events_from_store(store)
             events.append(event)
-            self._save_store_unlocked(policies, events)
+            evidence = self._evidence_from_store(store)
+            evidence.append(
+                self._build_evidence_snapshot(
+                    policy=updated_policy,
+                    action="apply",
+                    timestamp=timestamp,
+                )
+            )
+            self._save_store_unlocked(policies, events, evidence)
 
             return {
                 "applied": True,
@@ -233,7 +256,15 @@ class PolicyCenterService:
             )
             events = self._events_from_store(store)
             events.append(event)
-            self._save_store_unlocked(policies, events)
+            evidence = self._evidence_from_store(store)
+            evidence.append(
+                self._build_evidence_snapshot(
+                    policy=updated_policy,
+                    action=action,
+                    timestamp=timestamp,
+                )
+            )
+            self._save_store_unlocked(policies, events, evidence)
             return updated_policy
 
     def rollback_policy(self, policy_id: str) -> dict[str, object]:
@@ -278,7 +309,15 @@ class PolicyCenterService:
             )
             events = self._events_from_store(store)
             events.append(event)
-            self._save_store_unlocked(policies, events)
+            evidence = self._evidence_from_store(store)
+            evidence.append(
+                self._build_evidence_snapshot(
+                    policy=updated_policy,
+                    action="rollback",
+                    timestamp=timestamp,
+                )
+            )
+            self._save_store_unlocked(policies, events, evidence)
 
             return {
                 "rolled_back": True,
@@ -311,7 +350,15 @@ class PolicyCenterService:
             )
             events = self._events_from_store(store)
             events.append(event)
-            self._save_store_unlocked(policies, events)
+            evidence = self._evidence_from_store(store)
+            evidence.append(
+                self._build_evidence_snapshot(
+                    policy=updated_policy,
+                    action="verify",
+                    timestamp=timestamp,
+                )
+            )
+            self._save_store_unlocked(policies, events, evidence)
 
             return {
                 "verified": True,
@@ -346,6 +393,52 @@ class PolicyCenterService:
         with self._lock:
             store = self._load_store_unlocked()
             return list(reversed(self._events_from_store(store)))
+
+    def list_policy_evidence(self, policy_id: str) -> list[PolicyEvidenceRecord]:
+        self.get_policy(policy_id)
+        with self._lock:
+            store = self._load_store_unlocked()
+            evidence = self._evidence_from_store(store)
+            return [
+                snapshot
+                for snapshot in reversed(evidence)
+                if snapshot.policy_id == policy_id
+            ]
+
+    def list_policy_verifications(self, policy_id: str) -> list[PolicyEvidenceRecord]:
+        return [
+            snapshot
+            for snapshot in self.list_policy_evidence(policy_id)
+            if snapshot.action == "verify"
+        ]
+
+    def get_drift_summary(self) -> dict[str, object]:
+        policies = self.list_policies()
+        drifted_policies = [
+            {
+                "id": policy.id,
+                "name": policy.name,
+                "desired_state": policy.desired_state,
+                "live_state": policy.live_state,
+                "compliance": policy.compliance,
+            }
+            for policy in policies
+            if policy.compliance == PolicyCompliance.DRIFT
+        ]
+        return {
+            "total_policies": len(policies),
+            "drift_count": len(drifted_policies),
+            "partial_count": sum(
+                1 for policy in policies if policy.compliance == PolicyCompliance.PARTIAL
+            ),
+            "compliant_count": sum(
+                1 for policy in policies if policy.compliance == PolicyCompliance.COMPLIANT
+            ),
+            "unknown_count": sum(
+                1 for policy in policies if policy.compliance == PolicyCompliance.UNKNOWN
+            ),
+            "drifted_policies": drifted_policies,
+        }
 
     def recover_to_baseline(self) -> dict[str, object]:
         with self._lock:
@@ -394,7 +487,17 @@ class PolicyCenterService:
                         message=message,
                     )
                 )
-            self._save_store_unlocked(updated_policies, events)
+            evidence = self._evidence_from_store(store)
+            for policy in updated_policies:
+                action = "apply" if policy.id == "baseline_forwarding" else "rollback"
+                evidence.append(
+                    self._build_evidence_snapshot(
+                        policy=policy,
+                        action=action,
+                        timestamp=timestamp,
+                    )
+                )
+            self._save_store_unlocked(updated_policies, events, evidence)
             return result
 
     def _ensure_store(self) -> None:
@@ -403,6 +506,7 @@ class PolicyCenterService:
             self._save_store_unlocked(
                 self._policies_from_store(store),
                 self._events_from_store(store),
+                self._evidence_from_store(store),
             )
 
     def _load_store_unlocked(self) -> dict[str, object]:
@@ -419,17 +523,23 @@ class PolicyCenterService:
 
         policies = raw_store.get("policies")
         events = raw_store.get("events")
+        evidence = raw_store.get("evidence")
         if not isinstance(policies, list) or not policies:
-            return self._seed_store_unlocked(existing_events=events if isinstance(events, list) else None)
+            return self._seed_store_unlocked(
+                existing_events=events if isinstance(events, list) else None,
+                existing_evidence=evidence if isinstance(evidence, list) else None,
+            )
 
         return {
             "policies": policies,
             "events": events if isinstance(events, list) else [],
+            "evidence": evidence if isinstance(evidence, list) else [],
         }
 
     def _seed_store_unlocked(
         self,
         existing_events: list[object] | None = None,
+        existing_evidence: list[object] | None = None,
     ) -> dict[str, object]:
         timestamp = self._now_iso()
         policies = [
@@ -458,6 +568,7 @@ class PolicyCenterService:
         store = {
             "policies": [_model_to_dict(policy) for policy in policies],
             "events": existing_events or [],
+            "evidence": existing_evidence or [],
         }
         self._write_store_unlocked(store)
         return store
@@ -466,10 +577,15 @@ class PolicyCenterService:
         self,
         policies: list[PolicyRecord],
         events: list[PolicyEventRecord],
+        evidence: list[PolicyEvidenceRecord],
     ) -> None:
         store = {
             "policies": [_model_to_dict(policy) for policy in policies],
             "events": [_model_to_dict(event) for event in events[-self.MAX_EVENTS :]],
+            "evidence": [
+                _model_to_dict(snapshot)
+                for snapshot in evidence[-self.MAX_EVIDENCE :]
+            ],
         }
         self._write_store_unlocked(store)
 
@@ -487,6 +603,17 @@ class PolicyCenterService:
     def _events_from_store(self, store: dict[str, object]) -> list[PolicyEventRecord]:
         raw_events = store.get("events", [])
         return [PolicyEventRecord(**event) for event in raw_events if isinstance(event, dict)]
+
+    def _evidence_from_store(
+        self,
+        store: dict[str, object],
+    ) -> list[PolicyEvidenceRecord]:
+        raw_evidence = store.get("evidence", [])
+        return [
+            PolicyEvidenceRecord(**snapshot)
+            for snapshot in raw_evidence
+            if isinstance(snapshot, dict)
+        ]
 
     def _refresh_policies_from_live(
         self,
@@ -579,6 +706,60 @@ class PolicyCenterService:
             compliance=policy.compliance,
             message=message,
         )
+
+    def _build_evidence_snapshot(
+        self,
+        *,
+        policy: PolicyRecord,
+        action: str,
+        timestamp: str,
+    ) -> PolicyEvidenceRecord:
+        definition = self._get_definition(policy.id)
+        expected_cookies = {
+            str(cookie)
+            for cookie in definition.get("expected_cookies", ())
+        }
+
+        try:
+            ovs_flows = self._ovs_service.get_ovs_flows()
+            relevant_flows = [
+                self._compact_flow_snapshot(flow)
+                for flow in ovs_flows.get("flows", [])
+                if isinstance(flow, dict)
+                and str(flow.get("cookie", "")) in expected_cookies
+            ]
+            summary = (
+                f"Observed {len(relevant_flows)} relevant flow(s). "
+                f"Live state {self._enum_value(policy.live_state)}. "
+                f"Compliance {self._enum_value(policy.compliance)}."
+            )
+        except RuntimeError:
+            relevant_flows = []
+            summary = (
+                "Live flow evidence was unavailable during snapshot capture. "
+                f"Live state {self._enum_value(policy.live_state)}. "
+                f"Compliance {self._enum_value(policy.compliance)}."
+            )
+
+        return PolicyEvidenceRecord(
+            policy_id=policy.id,
+            timestamp=timestamp,
+            action=action,
+            compliance=policy.compliance,
+            live_state=policy.live_state,
+            relevant_flows=relevant_flows,
+            flow_count=len(relevant_flows),
+            summary=summary,
+        )
+
+    def _compact_flow_snapshot(self, flow: dict[str, object]) -> dict[str, object]:
+        return {
+            "label": str(flow.get("label", "Unclassified")),
+            "flow_type": str(flow.get("flow_type", "unknown")),
+            "cookie": str(flow.get("cookie", "")),
+            "priority": int(flow.get("priority", 0) or 0),
+            "actions": str(flow.get("actions", "")),
+        }
 
     def _event_result(self, policy: PolicyRecord) -> str:
         return (

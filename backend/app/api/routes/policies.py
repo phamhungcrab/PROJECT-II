@@ -51,6 +51,15 @@ def list_policy_events() -> dict[str, object]:
         _raise_server_error(exc)
 
 
+@router.get("/drift")
+def get_policy_drift_summary() -> dict[str, object]:
+    try:
+        service = get_policy_center_service()
+        return service.get_drift_summary()
+    except RuntimeError as exc:
+        _raise_server_error(exc)
+
+
 @router.post("/demo/base-forwarding")
 def apply_demo_base_forwarding_policy() -> dict[str, object]:
     try:
@@ -211,6 +220,38 @@ def get_demo_block_ping_policy_status() -> dict[str, object]:
     try:
         service = OVSFlowService()
         return service.get_policy_status()
+    except RuntimeError as exc:
+        _raise_server_error(exc)
+
+
+@router.get("/{policy_id}/evidence")
+def get_policy_evidence(policy_id: str) -> dict[str, object]:
+    try:
+        service = get_policy_center_service()
+        evidence = service.list_policy_evidence(policy_id)
+        return {
+            "policy_id": policy_id,
+            "count": len(evidence),
+            "evidence": evidence,
+        }
+    except KeyError as exc:
+        _raise_not_found(exc)
+    except RuntimeError as exc:
+        _raise_server_error(exc)
+
+
+@router.get("/{policy_id}/verifications")
+def get_policy_verifications(policy_id: str) -> dict[str, object]:
+    try:
+        service = get_policy_center_service()
+        verifications = service.list_policy_verifications(policy_id)
+        return {
+            "policy_id": policy_id,
+            "count": len(verifications),
+            "verifications": verifications,
+        }
+    except KeyError as exc:
+        _raise_not_found(exc)
     except RuntimeError as exc:
         _raise_server_error(exc)
 
