@@ -1,0 +1,6 @@
+model = "gpt-5.4"
+model_reasoning_effort = "xhigh"
+model_verbosity = "high"
+
+approval_policy = "never"
+sandbox_mode = "danger-full-access"
