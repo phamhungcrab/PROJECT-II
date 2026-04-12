@@ -5,6 +5,11 @@ export const navigationItems = [
     description: 'System health, controller reachability, and topology overview.',
   },
   {
+    path: '/policies',
+    label: 'Policy Center',
+    description: 'Policy objects, compliance drift, and live enforcement evidence.',
+  },
+  {
     path: '/topology',
     label: 'Topology',
     description: 'Detailed topology summary, nodes, links, and attachment context.',

@@ -1,4 +1,5 @@
 import { useEffect, useState } from 'react'
+import { Link } from 'react-router-dom'
 import { ErrorState } from '../components/state/ErrorState'
 import { LoadingState } from '../components/state/LoadingState'
 import { Panel } from '../components/ui/Panel'
@@ -6,8 +7,9 @@ import { StatCard } from '../components/ui/StatCard'
 import { StatusBadge } from '../components/ui/StatusBadge'
 import { appConfig } from '../config/appConfig'
 import { useApiResource } from '../hooks/useApiResource'
+import { policyApi } from '../services/api/policyApi'
 import { sdnApi } from '../services/api/sdnApi'
-import { classifyNode, formatDateTime, formatNumber } from '../utils/formatters'
+import { classifyNode, formatDateTime, formatLabel, formatNumber } from '../utils/formatters'
 
 interface DashboardData {
   health: Awaited<ReturnType<typeof sdnApi.getHealth>>
@@ -59,6 +61,22 @@ function createOperationTimestamp() {
   return new Date().toLocaleTimeString('en-GB', { hour12: false })
 }
 
+function getComplianceTone(compliance: string) {
+  if (compliance === 'COMPLIANT') {
+    return 'success' as const
+  }
+
+  if (compliance === 'PARTIAL') {
+    return 'warning' as const
+  }
+
+  if (compliance === 'DRIFT') {
+    return 'danger' as const
+  }
+
+  return 'neutral' as const
+}
+
 export function DashboardPage() {
   const [policyLoadingAction, setPolicyLoadingAction] = useState<string | null>(null)
   const [policyError, setPolicyError] = useState<string | null>(null)
@@ -86,6 +104,9 @@ export function DashboardPage() {
     },
     [],
   )
+  const policySummaryQuery = useApiResource(policyApi.getSummary, [])
+  const policyEventsQuery = useApiResource(policyApi.getEvents, [])
+  const policyDriftQuery = useApiResource(policyApi.getDriftSummary, [])
 
   const inventoryConnectorCount =
     data?.inventory.nodes.reduce(
@@ -100,6 +121,8 @@ export function DashboardPage() {
   const latestSnapshot =
     data?.inventory.nodes.find((node) => node.snapshot?.end?.end)?.snapshot?.end?.end
   const isPolicyBusy = Boolean(policyLoadingAction || scenarioLoadingAction)
+  const recentPolicyEvents = (policyEventsQuery.data?.events ?? []).slice(0, 5)
+  const driftedPolicies = policyDriftQuery.data?.drifted_policies ?? []
   const ovsEvidenceFlows = ovsEvidence?.flows ?? []
   const ovsBaseFlowCount = ovsEvidenceFlows.filter((flow) => flow.flow_type === 'base').length
   const ovsPolicyFlows = ovsEvidenceFlows.filter((flow) => flow.flow_type === 'policy')
@@ -254,6 +277,9 @@ export function DashboardPage() {
   }, [])
 
   async function refreshOperationalState() {
+    policySummaryQuery.reload()
+    policyEventsQuery.reload()
+    policyDriftQuery.reload()
     await Promise.all([loadPolicyStatus(), loadOvsEvidence()])
     void reload()
   }
@@ -421,6 +447,137 @@ export function DashboardPage() {
               helper={`${formatNumber(managedTableCount)} exposed tables`}
               tone="success"
             />
+          </div>
+
+          <div className="content-grid content-grid--two">
+            <Panel
+              title="Policy Compliance Summary"
+              description="Compact backend-driven Policy Center snapshot for operator awareness."
+              action={
+                <Link
+                  className="button button--ghost"
+                  to="/policies"
+                  style={{
+                    display: 'inline-flex',
+                    alignItems: 'center',
+                    textDecoration: 'none',
+                  }}
+                >
+                  Open Policy Center
+                </Link>
+              }
+            >
+              {policySummaryQuery.isLoading && !policySummaryQuery.data ? (
+                <LoadingState label="Loading policy compliance summary..." />
+              ) : null}
+
+              {policySummaryQuery.error && !policySummaryQuery.data ? (
+                <div className="notice notice--warning">{policySummaryQuery.error}</div>
+              ) : null}
+
+              {policySummaryQuery.data ? (
+                <>
+                  {policySummaryQuery.error ? (
+                    <div className="notice notice--warning" style={{ marginBottom: '16px' }}>
+                      Showing previously loaded policy summary. Latest refresh failed:{' '}
+                      {policySummaryQuery.error}
+                    </div>
+                  ) : null}
+
+                  <div className="mini-stats">
+                    <div className="mini-stat">
+                      <span>Total policies</span>
+                      <strong>
+                        {formatNumber(policySummaryQuery.data.total_policies)}
+                      </strong>
+                    </div>
+                    <div className="mini-stat">
+                      <span>Compliant</span>
+                      <strong>
+                        {formatNumber(policySummaryQuery.data.compliant_policies)}
+                      </strong>
+                    </div>
+                    <div className="mini-stat">
+                      <span>Drift</span>
+                      <strong>{formatNumber(policyDriftQuery.data?.drift_count ?? 0)}</strong>
+                    </div>
+                    <div className="mini-stat">
+                      <span>Unknown</span>
+                      <strong>
+                        {formatNumber(policySummaryQuery.data.unknown_policies)}
+                      </strong>
+                    </div>
+                  </div>
+
+                  <div className="metadata-item" style={{ marginTop: '16px' }}>
+                    <span className="metadata-label">Drift Summary</span>
+                    {policyDriftQuery.data?.drifted_policies.length ? (
+                      <div className="chip-row" style={{ marginTop: '12px' }}>
+                        {driftedPolicies.map((policy) => (
+                          <span key={policy.id} className="chip">
+                            {policy.name} · {formatLabel(policy.compliance)}
+                          </span>
+                        ))}
+                      </div>
+                    ) : (
+                      <p className="entity-list-meta" style={{ marginTop: '12px' }}>
+                        No policy drift detected in the current backend snapshot.
+                      </p>
+                    )}
+                  </div>
+                </>
+              ) : null}
+            </Panel>
+
+            <Panel
+              title="Recent Policy Events"
+              description="Latest backend policy actions and verification outcomes."
+            >
+              {policyEventsQuery.isLoading && !policyEventsQuery.data ? (
+                <LoadingState label="Loading recent policy events..." />
+              ) : null}
+
+              {policyEventsQuery.error && !policyEventsQuery.data ? (
+                <div className="notice notice--warning">{policyEventsQuery.error}</div>
+              ) : null}
+
+              {policyEventsQuery.data ? (
+                <>
+                  {policyEventsQuery.error ? (
+                    <div className="notice notice--warning" style={{ marginBottom: '16px' }}>
+                      Showing previously loaded policy events. Latest refresh failed:{' '}
+                      {policyEventsQuery.error}
+                    </div>
+                  ) : null}
+
+                  {recentPolicyEvents.length === 0 ? (
+                    <p className="entity-list-meta">No backend policy events recorded yet.</p>
+                  ) : (
+                    <ul className="entity-list" style={{ marginTop: 0 }}>
+                      {recentPolicyEvents.map((event) => (
+                        <li key={event.id} className="entity-list-item">
+                          <div>
+                            <div className="entity-list-heading">
+                              <strong>{event.policy_name}</strong>
+                              <StatusBadge
+                                label={formatLabel(event.compliance)}
+                                tone={getComplianceTone(event.compliance)}
+                              />
+                            </div>
+                            <p className="entity-list-meta">
+                              {formatLabel(event.action)} · {event.message}
+                            </p>
+                          </div>
+                          <span className="entity-list-trailing">
+                            {formatDateTime(event.timestamp)}
+                          </span>
+                        </li>
+                      ))}
+                    </ul>
+                  )}
+                </>
+              ) : null}
+            </Panel>
           </div>
 
           <Panel
