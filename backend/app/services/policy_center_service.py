@@ -37,7 +37,6 @@ POLICY_DEFINITIONS: dict[str, dict[str, object]] = {
             "This is the preferred safe-state for the demo lab.",
         ],
         "risk": "Low risk. Restores the baseline forwarding path.",
-        "status_flag": "base_forwarding_enabled",
         "cookie_flags": ("base_normal",),
         "seed_enabled": True,
     },
@@ -54,10 +53,9 @@ POLICY_DEFINITIONS: dict[str, dict[str, object]] = {
         "expected_impact": "ICMP echo traffic between h1 and h2 is denied.",
         "notes": [
             "Uses the existing OVS-direct ping blocking flow set.",
-            "Rollback prefers baseline recovery to clear partial state safely.",
+            "Rollback intentionally prefers baseline recovery to clear partial state safely.",
         ],
         "risk": "Medium risk. Ping-based reachability checks will fail while active.",
-        "status_flag": "block_ping_enabled",
         "cookie_flags": ("block_ping_1", "block_ping_2"),
         "seed_enabled": False,
     },
@@ -74,10 +72,9 @@ POLICY_DEFINITIONS: dict[str, dict[str, object]] = {
         "expected_impact": "HTTP traffic over TCP/80 between h1 and h2 is denied.",
         "notes": [
             "Uses the existing OVS-direct HTTP blocking flow set.",
-            "Rollback prefers baseline recovery to avoid stale policy flows.",
+            "Rollback intentionally prefers baseline recovery to avoid stale policy flows.",
         ],
         "risk": "Medium risk. Application checks over TCP/80 will fail while active.",
-        "status_flag": "block_http_enabled",
         "cookie_flags": ("block_http_1", "block_http_2"),
         "seed_enabled": False,
     },
@@ -94,10 +91,9 @@ POLICY_DEFINITIONS: dict[str, dict[str, object]] = {
         "expected_impact": "IPv4 traffic between h1 and h2 is blocked in both directions.",
         "notes": [
             "Uses the existing OVS-direct host isolation flow set.",
-            "Rollback prefers baseline recovery to restore a clean switch state.",
+            "Rollback intentionally prefers baseline recovery to restore a clean switch state.",
         ],
         "risk": "High impact for the host pair. Host-to-host IPv4 traffic is denied.",
-        "status_flag": "isolate_h1_enabled",
         "cookie_flags": ("isolate_h1_1", "isolate_h1_2"),
         "seed_enabled": False,
     },
@@ -278,7 +274,7 @@ class PolicyCenterService:
                 action="rollback",
                 result=self._event_result(updated_policy),
                 timestamp=timestamp,
-                message=f"Rolled back policy via {rollback_strategy}.",
+                message=self._rollback_message(rollback_strategy),
             )
             events = self._events_from_store(store)
             events.append(event)
@@ -310,7 +306,7 @@ class PolicyCenterService:
                 timestamp=timestamp,
                 message=(
                     "Verified policy against live OVS flow/status evidence. "
-                    f"Compliance is {updated_policy.compliance}."
+                    f"Compliance is {self._enum_value(updated_policy.compliance)}."
                 ),
             )
             events = self._events_from_store(store)
@@ -591,6 +587,11 @@ class PolicyCenterService:
             else "failed"
         )
 
+    def _rollback_message(self, rollback_strategy: str) -> str:
+        if rollback_strategy == "recover_baseline":
+            return "Rolled back policy via baseline recovery."
+        return "Rolled back policy via targeted flow removal."
+
     def _get_definition(self, policy_id: str) -> dict[str, object]:
         definition = POLICY_DEFINITIONS.get(policy_id)
         if definition is None:
@@ -611,6 +612,9 @@ class PolicyCenterService:
         payload = _model_to_dict(policy)
         payload.update(updates)
         return PolicyRecord(**payload)
+
+    def _enum_value(self, enum_value: object) -> str:
+        return str(getattr(enum_value, "value", enum_value))
 
     def _now_iso(self) -> str:
         return datetime.now(timezone.utc).isoformat()
