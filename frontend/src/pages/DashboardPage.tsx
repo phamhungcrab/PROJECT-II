@@ -77,10 +77,31 @@ function getComplianceTone(compliance: string) {
   return 'neutral' as const
 }
 
+function getResultTone(result: string) {
+  if (result === 'success') {
+    return 'success' as const
+  }
+
+  if (result === 'failed') {
+    return 'danger' as const
+  }
+
+  return 'neutral' as const
+}
+
 export function DashboardPage() {
   const [policyLoadingAction, setPolicyLoadingAction] = useState<string | null>(null)
   const [policyError, setPolicyError] = useState<string | null>(null)
   const [policyResult, setPolicyResult] = useState<string | null>(null)
+  const [dashboardPolicyActionLoading, setDashboardPolicyActionLoading] = useState<
+    string | null
+  >(null)
+  const [dashboardPolicyActionError, setDashboardPolicyActionError] = useState<
+    string | null
+  >(null)
+  const [dashboardPolicyActionMessage, setDashboardPolicyActionMessage] = useState<
+    string | null
+  >(null)
   const [policyStatus, setPolicyStatus] = useState<PolicyStatus | null>(null)
   const [policyStatusError, setPolicyStatusError] = useState<string | null>(null)
   const [ovsEvidence, setOvsEvidence] = useState<OvsEvidence | null>(null)
@@ -120,9 +141,15 @@ export function DashboardPage() {
     0
   const latestSnapshot =
     data?.inventory.nodes.find((node) => node.snapshot?.end?.end)?.snapshot?.end?.end
-  const isPolicyBusy = Boolean(policyLoadingAction || scenarioLoadingAction)
+  const isPolicyBusy = Boolean(
+    policyLoadingAction || scenarioLoadingAction || dashboardPolicyActionLoading,
+  )
   const recentPolicyEvents = (policyEventsQuery.data?.events ?? []).slice(0, 5)
   const driftedPolicies = policyDriftQuery.data?.drifted_policies ?? []
+  const desiredEnabledPolicies =
+    policySummaryQuery.data?.policies.filter(
+      (policy) => policy.desired_state === 'ENABLED',
+    ) ?? []
   const ovsEvidenceFlows = ovsEvidence?.flows ?? []
   const ovsBaseFlowCount = ovsEvidenceFlows.filter((flow) => flow.flow_type === 'base').length
   const ovsPolicyFlows = ovsEvidenceFlows.filter((flow) => flow.flow_type === 'policy')
@@ -153,6 +180,22 @@ export function DashboardPage() {
     policyStatus.isolate_h1_enabled === hasIsolationPolicyFlow
   const requiresOperatorAttention =
     policyStatus !== null && ovsEvidence !== null && !isEvidenceAligned
+  const driftCount = policyDriftQuery.data?.drift_count ?? 0
+  const partialCount = policyDriftQuery.data?.partial_count ?? 0
+  const compliantCount = policyDriftQuery.data?.compliant_count ?? 0
+  const unknownCount = policyDriftQuery.data?.unknown_count ?? 0
+  const driftHeadline =
+    driftCount > 0
+      ? `${formatNumber(driftCount)} drifted polic${driftCount === 1 ? 'y' : 'ies'} require operator attention.`
+      : partialCount > 0
+        ? `${formatNumber(partialCount)} polic${partialCount === 1 ? 'y is' : 'ies are'} partially enforced and should be monitored.`
+        : 'Control plane state is aligned with the current policy set.'
+  const recoveryNarrative =
+    driftCount > 0 || requiresOperatorAttention
+      ? 'Recover Baseline is ready if the lab needs immediate realignment.'
+      : isBaselineActive
+        ? 'Baseline forwarding is already active and recovery remains available.'
+        : 'Rollback and baseline recovery paths are available from the operator console.'
 
   function appendOperationLog(action: string, result: OperationLogEntry['result']) {
     setOperationLogs((current) =>
@@ -282,6 +325,83 @@ export function DashboardPage() {
     policyDriftQuery.reload()
     await Promise.all([loadPolicyStatus(), loadOvsEvidence()])
     void reload()
+  }
+
+  async function handleRefreshPolicyState() {
+    setDashboardPolicyActionLoading('Refresh Policy State')
+    setDashboardPolicyActionError(null)
+    setDashboardPolicyActionMessage(null)
+
+    try {
+      await refreshOperationalState()
+      setDashboardPolicyActionMessage(
+        'Policy state, drift watch, and live switch evidence were refreshed.',
+      )
+      appendOperationLog('Refresh Policy State', 'success')
+    } catch (requestError) {
+      const message =
+        requestError instanceof Error
+          ? requestError.message
+          : 'Unable to refresh policy state'
+
+      setDashboardPolicyActionError(message)
+      appendOperationLog('Refresh Policy State', 'failed')
+    } finally {
+      setDashboardPolicyActionLoading(null)
+    }
+  }
+
+  async function handleVerifyKeyPolicies() {
+    const keyPolicyIds = [
+      'baseline_forwarding',
+      'block_ping_h1_h2',
+      'block_http_h1_h2',
+      'isolate_h1',
+    ]
+
+    setDashboardPolicyActionLoading('Verify Key Policies')
+    setDashboardPolicyActionError(null)
+    setDashboardPolicyActionMessage(null)
+
+    try {
+      const responses = []
+
+      for (const policyId of keyPolicyIds) {
+        responses.push(await policyApi.verifyPolicy(policyId))
+      }
+
+      setPolicyResult(
+        JSON.stringify(
+          {
+            action: 'verify-key-policies',
+            verified_policies: responses.map((response) => ({
+              id: response.policy.id,
+              name: response.policy.name,
+              compliance: response.policy.compliance,
+              live_state: response.policy.live_state,
+              timestamp: response.event.timestamp,
+            })),
+          },
+          null,
+          2,
+        ),
+      )
+      setDashboardPolicyActionMessage(
+        `Verified ${formatNumber(responses.length)} key policies against live OVS evidence.`,
+      )
+      appendOperationLog('Verify Key Policies', 'success')
+      await refreshOperationalState()
+    } catch (requestError) {
+      const message =
+        requestError instanceof Error
+          ? requestError.message
+          : 'Unable to verify key policies'
+
+      setDashboardPolicyActionError(message)
+      appendOperationLog('Verify Key Policies', 'failed')
+    } finally {
+      setDashboardPolicyActionLoading(null)
+    }
   }
 
   async function runPolicyAction(
@@ -452,19 +572,12 @@ export function DashboardPage() {
           <div className="content-grid content-grid--two">
             <Panel
               title="Policy Compliance Summary"
-              description="Compact backend-driven Policy Center snapshot for operator awareness."
+              description="High-level control-plane posture from the backend Policy Center."
               action={
-                <Link
-                  className="button button--ghost"
-                  to="/policies"
-                  style={{
-                    display: 'inline-flex',
-                    alignItems: 'center',
-                    textDecoration: 'none',
-                  }}
-                >
-                  Open Policy Center
-                </Link>
+                <StatusBadge
+                  label={driftCount > 0 ? 'Attention' : 'Aligned'}
+                  tone={driftCount > 0 ? 'danger' : 'success'}
+                />
               }
             >
               {policySummaryQuery.isLoading && !policySummaryQuery.data ? (
@@ -487,41 +600,35 @@ export function DashboardPage() {
                   <div className="mini-stats">
                     <div className="mini-stat">
                       <span>Total policies</span>
-                      <strong>
-                        {formatNumber(policySummaryQuery.data.total_policies)}
-                      </strong>
+                      <strong>{formatNumber(policySummaryQuery.data.total_policies)}</strong>
                     </div>
                     <div className="mini-stat">
                       <span>Compliant</span>
-                      <strong>
-                        {formatNumber(policySummaryQuery.data.compliant_policies)}
-                      </strong>
+                      <strong>{formatNumber(compliantCount)}</strong>
                     </div>
                     <div className="mini-stat">
                       <span>Drift</span>
-                      <strong>{formatNumber(policyDriftQuery.data?.drift_count ?? 0)}</strong>
+                      <strong>{formatNumber(driftCount)}</strong>
                     </div>
                     <div className="mini-stat">
                       <span>Unknown</span>
-                      <strong>
-                        {formatNumber(policySummaryQuery.data.unknown_policies)}
-                      </strong>
+                      <strong>{formatNumber(unknownCount)}</strong>
                     </div>
                   </div>
 
                   <div className="metadata-item" style={{ marginTop: '16px' }}>
-                    <span className="metadata-label">Drift Summary</span>
-                    {policyDriftQuery.data?.drifted_policies.length ? (
+                    <span className="metadata-label">Desired Policy State</span>
+                    {desiredEnabledPolicies.length > 0 ? (
                       <div className="chip-row" style={{ marginTop: '12px' }}>
-                        {driftedPolicies.map((policy) => (
+                        {desiredEnabledPolicies.map((policy) => (
                           <span key={policy.id} className="chip">
-                            {policy.name} · {formatLabel(policy.compliance)}
+                            {policy.name}
                           </span>
                         ))}
                       </div>
                     ) : (
                       <p className="entity-list-meta" style={{ marginTop: '12px' }}>
-                        No policy drift detected in the current backend snapshot.
+                        No policies are currently marked as enabled.
                       </p>
                     )}
                   </div>
@@ -530,55 +637,255 @@ export function DashboardPage() {
             </Panel>
 
             <Panel
-              title="Recent Policy Events"
-              description="Latest backend policy actions and verification outcomes."
+              title="Drift Watch"
+              description="Compact closed-loop signal showing whether desired policy state still matches live enforcement."
+              action={
+                <StatusBadge
+                  label={driftCount > 0 ? 'Attention Required' : 'Aligned'}
+                  tone={driftCount > 0 ? 'danger' : partialCount > 0 ? 'warning' : 'success'}
+                />
+              }
             >
-              {policyEventsQuery.isLoading && !policyEventsQuery.data ? (
-                <LoadingState label="Loading recent policy events..." />
+              {policyDriftQuery.isLoading && !policyDriftQuery.data ? (
+                <LoadingState label="Loading drift watch..." />
               ) : null}
 
-              {policyEventsQuery.error && !policyEventsQuery.data ? (
-                <div className="notice notice--warning">{policyEventsQuery.error}</div>
+              {policyDriftQuery.error && !policyDriftQuery.data ? (
+                <div className="notice notice--warning">{policyDriftQuery.error}</div>
               ) : null}
 
-              {policyEventsQuery.data ? (
+              {policyDriftQuery.data ? (
                 <>
-                  {policyEventsQuery.error ? (
+                  {policyDriftQuery.error ? (
                     <div className="notice notice--warning" style={{ marginBottom: '16px' }}>
-                      Showing previously loaded policy events. Latest refresh failed:{' '}
-                      {policyEventsQuery.error}
+                      Showing previously loaded drift state. Latest refresh failed:{' '}
+                      {policyDriftQuery.error}
                     </div>
                   ) : null}
 
-                  {recentPolicyEvents.length === 0 ? (
-                    <p className="entity-list-meta">No backend policy events recorded yet.</p>
-                  ) : (
-                    <ul className="entity-list" style={{ marginTop: 0 }}>
-                      {recentPolicyEvents.map((event) => (
-                        <li key={event.id} className="entity-list-item">
-                          <div>
-                            <div className="entity-list-heading">
-                              <strong>{event.policy_name}</strong>
-                              <StatusBadge
-                                label={formatLabel(event.compliance)}
-                                tone={getComplianceTone(event.compliance)}
-                              />
+                  <div
+                    className="metadata-item"
+                    style={{
+                      background:
+                        driftCount > 0
+                          ? 'var(--danger-soft)'
+                          : partialCount > 0
+                            ? 'var(--warning-soft)'
+                            : 'var(--success-soft)',
+                    }}
+                  >
+                    <span className="metadata-label">Drift Count</span>
+                    <strong
+                      className="metadata-value"
+                      style={{
+                        marginTop: '12px',
+                        fontSize: '2rem',
+                        lineHeight: 1,
+                      }}
+                    >
+                      {formatNumber(driftCount)}
+                    </strong>
+                    <p className="entity-list-meta" style={{ marginTop: '10px' }}>
+                      {driftHeadline}
+                    </p>
+                  </div>
+
+                  <div className="metadata-item" style={{ marginTop: '16px' }}>
+                    <span className="metadata-label">Drifted Policies</span>
+                    {driftedPolicies.length > 0 ? (
+                      <ul className="entity-list" style={{ marginTop: '12px' }}>
+                        {driftedPolicies.map((policy) => (
+                          <li key={policy.id} className="entity-list-item">
+                            <div>
+                              <div className="entity-list-heading">
+                                <strong>{policy.name}</strong>
+                                <StatusBadge label="Drift" tone="danger" />
+                              </div>
+                              <p className="entity-list-meta">
+                                Desired {formatLabel(policy.desired_state)} · Live{' '}
+                                {formatLabel(policy.live_state)}
+                              </p>
                             </div>
-                            <p className="entity-list-meta">
-                              {formatLabel(event.action)} · {event.message}
-                            </p>
-                          </div>
-                          <span className="entity-list-trailing">
-                            {formatDateTime(event.timestamp)}
-                          </span>
-                        </li>
-                      ))}
-                    </ul>
-                  )}
+                            <span className="entity-list-trailing">
+                              {formatLabel(policy.compliance)}
+                            </span>
+                          </li>
+                        ))}
+                      </ul>
+                    ) : (
+                      <p className="entity-list-meta" style={{ marginTop: '12px' }}>
+                        No drifted policies. The control plane is aligned with live enforcement.
+                      </p>
+                    )}
+                  </div>
                 </>
               ) : null}
             </Panel>
           </div>
+
+          <div className="content-grid content-grid--two">
+            <Panel
+              title="Quick Policy Actions"
+              description="Safe operator actions for refreshing state and validating policy compliance without changing the active demo path."
+              action={
+                <StatusBadge
+                  label={dashboardPolicyActionLoading ? 'Working' : 'Ready'}
+                  tone={dashboardPolicyActionLoading ? 'warning' : 'neutral'}
+                />
+              }
+            >
+              <div className="form-actions">
+                <button
+                  className="button button--ghost"
+                  type="button"
+                  disabled={isPolicyBusy}
+                  onClick={() => void handleRefreshPolicyState()}
+                >
+                  {dashboardPolicyActionLoading === 'Refresh Policy State'
+                    ? 'Running...'
+                    : 'Refresh Policy State'}
+                </button>
+                <button
+                  className="button"
+                  type="button"
+                  disabled={isPolicyBusy}
+                  onClick={() => void handleVerifyKeyPolicies()}
+                >
+                  {dashboardPolicyActionLoading === 'Verify Key Policies'
+                    ? 'Running...'
+                    : 'Verify Key Policies'}
+                </button>
+                <Link
+                  className="button button--secondary"
+                  to="/policies"
+                  style={{
+                    display: 'inline-flex',
+                    alignItems: 'center',
+                    justifyContent: 'center',
+                    textDecoration: 'none',
+                  }}
+                >
+                  Open Policy Center
+                </Link>
+              </div>
+
+              {dashboardPolicyActionError ? (
+                <div className="notice notice--warning" style={{ marginTop: '16px' }}>
+                  {dashboardPolicyActionError}
+                </div>
+              ) : null}
+
+              {dashboardPolicyActionMessage ? (
+                <div className="metadata-item" style={{ marginTop: '16px' }}>
+                  <span className="metadata-label">Operator Note</span>
+                  <strong className="metadata-value" style={{ marginTop: '12px' }}>
+                    {dashboardPolicyActionMessage}
+                  </strong>
+                </div>
+              ) : null}
+            </Panel>
+
+            <Panel
+              title="Control Loop Narrative"
+              description="Live SDN-management story points for defense: desired state, enforcement evidence, compliance, and recovery."
+            >
+              <div className="metadata-grid" style={{ gridTemplateColumns: 'repeat(2, minmax(0, 1fr))' }}>
+                <div className="metadata-item">
+                  <span className="metadata-label">Desired State</span>
+                  <strong className="metadata-value">
+                    {formatNumber(desiredEnabledPolicies.length)} enabled policy
+                    {desiredEnabledPolicies.length === 1 ? ' object' : ' objects'}
+                  </strong>
+                  <p className="entity-list-meta" style={{ marginTop: '10px' }}>
+                    Backend policy intent is tracked as desired state in Policy Center.
+                  </p>
+                </div>
+                <div className="metadata-item">
+                  <span className="metadata-label">Enforcement Evidence</span>
+                  <strong className="metadata-value">
+                    {formatNumber(ovsPolicyFlows.length)} policy flow
+                    {ovsPolicyFlows.length === 1 ? '' : 's'} / {formatNumber(ovsBaseFlowCount)} base
+                  </strong>
+                  <p className="entity-list-meta" style={{ marginTop: '10px' }}>
+                    Live OVS evidence is read directly from the switch to validate enforcement.
+                  </p>
+                </div>
+                <div className="metadata-item">
+                  <span className="metadata-label">Compliance Result</span>
+                  <strong className="metadata-value">
+                    {formatNumber(compliantCount)} compliant, {formatNumber(driftCount)} drift,{' '}
+                    {formatNumber(partialCount)} partial
+                  </strong>
+                  <p className="entity-list-meta" style={{ marginTop: '10px' }}>
+                    Drift detection closes the loop between desired policy state and live flows.
+                  </p>
+                </div>
+                <div className="metadata-item">
+                  <span className="metadata-label">Recovery Path</span>
+                  <strong className="metadata-value">
+                    {isBaselineActive ? 'Baseline Ready' : 'Rollback Available'}
+                  </strong>
+                  <p className="entity-list-meta" style={{ marginTop: '10px' }}>
+                    {recoveryNarrative}
+                  </p>
+                </div>
+              </div>
+            </Panel>
+          </div>
+
+          <Panel
+            title="Recent Policy Events"
+            description="Backend policy activity feed for recent verification, rollback, and enforcement actions."
+          >
+            {policyEventsQuery.isLoading && !policyEventsQuery.data ? (
+              <LoadingState label="Loading recent policy events..." />
+            ) : null}
+
+            {policyEventsQuery.error && !policyEventsQuery.data ? (
+              <div className="notice notice--warning">{policyEventsQuery.error}</div>
+            ) : null}
+
+            {policyEventsQuery.data ? (
+              <>
+                {policyEventsQuery.error ? (
+                  <div className="notice notice--warning" style={{ marginBottom: '16px' }}>
+                    Showing previously loaded policy events. Latest refresh failed:{' '}
+                    {policyEventsQuery.error}
+                  </div>
+                ) : null}
+
+                {recentPolicyEvents.length === 0 ? (
+                  <p className="entity-list-meta">No backend policy events recorded yet.</p>
+                ) : (
+                  <ul className="entity-list" style={{ marginTop: 0 }}>
+                    {recentPolicyEvents.map((event) => (
+                      <li key={event.id} className="entity-list-item">
+                        <div>
+                          <div className="entity-list-heading">
+                            <strong>{formatLabel(event.action)}</strong>
+                            <StatusBadge
+                              label={formatLabel(event.compliance)}
+                              tone={getComplianceTone(event.compliance)}
+                            />
+                            <StatusBadge
+                              label={formatLabel(event.result)}
+                              tone={getResultTone(event.result)}
+                            />
+                          </div>
+                          <p className="entity-list-meta">
+                            {event.policy_name} · {event.message}
+                          </p>
+                        </div>
+                        <span className="entity-list-trailing">
+                          {formatDateTime(event.timestamp)}
+                        </span>
+                      </li>
+                    ))}
+                  </ul>
+                )}
+              </>
+            ) : null}
+          </Panel>
 
           <Panel
             title="Policy Control"

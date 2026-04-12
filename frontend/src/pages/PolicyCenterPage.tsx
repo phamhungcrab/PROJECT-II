@@ -22,6 +22,14 @@ import { formatDateTime, formatLabel, formatNumber } from '../utils/formatters'
 type PolicyFilter = 'all' | 'compliant' | 'drift' | 'enabled'
 type PolicyRowAction = 'preview' | 'apply' | 'verify' | 'rollback'
 
+interface GeneratedPolicyReport {
+  generatedAt: string
+  fileBaseName: string
+  summaryText: string
+  markdown: string
+  json: string
+}
+
 function getErrorMessage(error: unknown) {
   if (error instanceof Error) {
     return error.message
@@ -85,6 +93,30 @@ function summarizeEvidenceLabels(evidence: PolicyEvidenceResponse | null) {
   return latestEvidence.relevant_flows.map((flow) => flow.label || flow.cookie)
 }
 
+function buildRecoveryNote(policy: PolicyRecord) {
+  if (policy.id === 'baseline_forwarding') {
+    return 'Use Apply to restore baseline forwarding again if the NORMAL flow is missing. Verify can be used to confirm switch alignment.'
+  }
+
+  return 'Use Rollback to safely revert this policy effect. If the wider lab state still looks inconsistent, use Recover Baseline from Dashboard and then verify again.'
+}
+
+function downloadTextFile(
+  filename: string,
+  content: string,
+  mimeType: string,
+) {
+  const blob = new Blob([content], { type: mimeType })
+  const objectUrl = URL.createObjectURL(blob)
+  const anchor = document.createElement('a')
+  anchor.href = objectUrl
+  anchor.download = filename
+  document.body.appendChild(anchor)
+  anchor.click()
+  document.body.removeChild(anchor)
+  URL.revokeObjectURL(objectUrl)
+}
+
 export function PolicyCenterPage() {
   const [policyFilter, setPolicyFilter] = useState<PolicyFilter>('all')
   const [searchQuery, setSearchQuery] = useState('')
@@ -104,6 +136,10 @@ export function PolicyCenterPage() {
   } | null>(null)
   const [actionError, setActionError] = useState<string | null>(null)
   const [actionResult, setActionResult] = useState<PolicyActionResponse | null>(null)
+  const [generatedPolicyReport, setGeneratedPolicyReport] =
+    useState<GeneratedPolicyReport | null>(null)
+  const [reportMessage, setReportMessage] = useState<string | null>(null)
+  const [reportError, setReportError] = useState<string | null>(null)
 
   const policyQuery = useApiResource(policyApi.listPolicies, [])
   const summaryQuery = useApiResource(policyApi.getSummary, [])
@@ -184,9 +220,15 @@ export function PolicyCenterPage() {
       setPolicyPreview(null)
       setPolicyEvidence(null)
       setPolicyVerifications(null)
+      setGeneratedPolicyReport(null)
+      setReportMessage(null)
+      setReportError(null)
       return
     }
 
+    setGeneratedPolicyReport(null)
+    setReportMessage(null)
+    setReportError(null)
     void loadPolicyWorkspace(selectedPolicyId)
   }, [selectedPolicyId])
 
@@ -238,6 +280,9 @@ export function PolicyCenterPage() {
       }
 
       setActionResult(response)
+      setGeneratedPolicyReport(null)
+      setReportMessage(null)
+      setReportError(null)
       await refreshPolicyCenter(policyId)
     } catch (error) {
       setActionError(getErrorMessage(error))
@@ -249,6 +294,223 @@ export function PolicyCenterPage() {
   const latestEvidence = policyEvidence?.evidence[0] ?? null
   const latestVerification = policyVerifications?.verifications[0] ?? null
   const evidenceLabels = summarizeEvidenceLabels(policyEvidence)
+
+  function buildPolicyReport() {
+    if (!selectedPolicy || !policyPreview) {
+      throw new Error('Policy detail is still loading. Try again in a moment.')
+    }
+
+    const generatedAt = new Date().toISOString()
+    const relevantFlows =
+      latestEvidence?.relevant_flows.map((flow) => ({
+        label: flow.label,
+        cookie: flow.cookie,
+        priority: flow.priority,
+        actions: flow.actions,
+      })) ?? []
+    const recentVerifications =
+      policyVerifications?.verifications.slice(0, 3).map((verification) => ({
+        timestamp: verification.timestamp,
+        compliance: verification.compliance,
+        live_state: verification.live_state,
+        flow_count: verification.flow_count,
+        summary: verification.summary,
+      })) ?? []
+    const recentEvents = selectedPolicyEvents.map((event) => ({
+      timestamp: event.timestamp,
+      action: event.action,
+      compliance: event.compliance,
+      result: event.result,
+      message: event.message,
+    }))
+    const driftSummary = {
+      drift_count: driftQuery.data?.drift_count ?? 0,
+      partial_count: driftQuery.data?.partial_count ?? 0,
+      compliant_count: driftQuery.data?.compliant_count ?? 0,
+      unknown_count: driftQuery.data?.unknown_count ?? 0,
+      drifted_policies:
+        driftQuery.data?.drifted_policies.map((policy) => policy.name) ?? [],
+    }
+    const recoveryNote = buildRecoveryNote(selectedPolicy)
+    const reportPayload = {
+      generated_at: generatedAt,
+      policy_overview: {
+        name: selectedPolicy.name,
+        id: selectedPolicy.id,
+        type: selectedPolicy.type,
+        target: selectedPolicy.target,
+        description: selectedPolicy.description,
+      },
+      intended_enforcement: {
+        mapped_enforcement_action: policyPreview.mapped_enforcement_action,
+        expected_impact: policyPreview.expected_impact,
+        notes: policyPreview.notes,
+        risk: policyPreview.risk,
+      },
+      compliance_result: {
+        desired_state: selectedPolicy.desired_state,
+        live_state: selectedPolicy.live_state,
+        compliance: selectedPolicy.compliance,
+        last_applied_at: selectedPolicy.last_applied_at,
+        last_verified_at: selectedPolicy.last_verified_at,
+      },
+      live_enforcement_evidence: {
+        latest_summary: latestEvidence?.summary ?? 'No evidence snapshot available yet.',
+        flow_count: latestEvidence?.flow_count ?? 0,
+        relevant_flows: relevantFlows,
+      },
+      verification_history: {
+        verification_count: policyVerifications?.count ?? 0,
+        latest_summary:
+          latestVerification?.summary ?? 'No verification history available yet.',
+        recent_verifications: recentVerifications,
+      },
+      recent_event_timeline: recentEvents,
+      drift_summary: driftSummary,
+      recovery_path: {
+        note: recoveryNote,
+        rollback_action: 'Use the Rollback action in Policy Center.',
+      },
+    }
+
+    const summaryText = [
+      `Policy: ${selectedPolicy.name} (${selectedPolicy.id})`,
+      `Desired state: ${selectedPolicy.desired_state}`,
+      `Live state: ${selectedPolicy.live_state}`,
+      `Compliance: ${selectedPolicy.compliance}`,
+      `Latest evidence: ${latestEvidence?.summary ?? 'No evidence snapshot available yet.'}`,
+      `Drift watch: ${formatNumber(driftSummary.drift_count)} drift / ${formatNumber(driftSummary.partial_count)} partial / ${formatNumber(driftSummary.compliant_count)} compliant`,
+      `Recovery path: ${recoveryNote}`,
+    ].join('\n')
+
+    const markdown = [
+      `# Policy Evidence Report`,
+      ``,
+      `Generated at: ${formatDateTime(generatedAt)}`,
+      ``,
+      `## Policy Overview`,
+      `- Name: ${selectedPolicy.name}`,
+      `- ID: ${selectedPolicy.id}`,
+      `- Type: ${formatLabel(selectedPolicy.type)}`,
+      `- Target: ${selectedPolicy.target}`,
+      `- Description: ${selectedPolicy.description}`,
+      ``,
+      `## Intended Enforcement`,
+      `- Mapped enforcement action: ${policyPreview.mapped_enforcement_action}`,
+      `- Expected impact: ${policyPreview.expected_impact}`,
+      `- Notes: ${policyPreview.notes.join(' | ') || 'N/A'}`,
+      `- Risk: ${policyPreview.risk}`,
+      ``,
+      `## Live Enforcement Evidence`,
+      `- Desired state: ${selectedPolicy.desired_state}`,
+      `- Live state: ${selectedPolicy.live_state}`,
+      `- Compliance: ${selectedPolicy.compliance}`,
+      `- Last applied: ${formatDateTime(selectedPolicy.last_applied_at)}`,
+      `- Last verified: ${formatDateTime(selectedPolicy.last_verified_at)}`,
+      `- Latest evidence summary: ${latestEvidence?.summary ?? 'No evidence snapshot available yet.'}`,
+      `- Relevant flow count: ${formatNumber(latestEvidence?.flow_count ?? 0)}`,
+      '',
+      ...(
+        relevantFlows.length > 0
+          ? relevantFlows.map(
+              (flow) =>
+                `  - ${flow.label} | ${flow.cookie} | priority ${formatNumber(flow.priority)} | ${flow.actions}`,
+            )
+          : ['  - No relevant compact flows recorded.']
+      ),
+      ``,
+      `## Compliance Result`,
+      `- Drift summary: ${formatNumber(driftSummary.drift_count)} drift / ${formatNumber(driftSummary.partial_count)} partial / ${formatNumber(driftSummary.compliant_count)} compliant / ${formatNumber(driftSummary.unknown_count)} unknown`,
+      `- Drifted policies: ${driftSummary.drifted_policies.join(', ') || 'None'}`,
+      `- Latest verification: ${latestVerification?.summary ?? 'No verification history available yet.'}`,
+      ``,
+      `## Recent Event Timeline`,
+      ...(
+        recentEvents.length > 0
+          ? recentEvents.map(
+              (event) =>
+                `- ${formatDateTime(event.timestamp)} | ${formatLabel(event.action)} | ${event.result} | ${event.compliance} | ${event.message}`,
+            )
+          : ['- No recent policy events for this policy.']
+      ),
+      ``,
+      `## Recovery Path`,
+      `- ${recoveryNote}`,
+      `- Rollback action: Use the Rollback action in Policy Center.`,
+    ].join('\n')
+
+    return {
+      generatedAt,
+      fileBaseName: `${selectedPolicy.id}-evidence-report`,
+      summaryText,
+      markdown,
+      json: JSON.stringify(reportPayload, null, 2),
+    }
+  }
+
+  function handleGenerateReport() {
+    setReportError(null)
+
+    try {
+      const report = buildPolicyReport()
+      setGeneratedPolicyReport(report)
+      setReportMessage(`Report generated for ${selectedPolicy?.name ?? 'selected policy'}.`)
+    } catch (error) {
+      setReportError(getErrorMessage(error))
+    }
+  }
+
+  async function handleCopySummary() {
+    setReportError(null)
+
+    try {
+      const report = generatedPolicyReport ?? buildPolicyReport()
+
+      if (!navigator.clipboard?.writeText) {
+        throw new Error('Clipboard copy is not available in this browser context.')
+      }
+
+      await navigator.clipboard.writeText(report.summaryText)
+      setGeneratedPolicyReport(report)
+      setReportMessage('Report summary copied to clipboard.')
+    } catch (error) {
+      setReportError(getErrorMessage(error))
+    }
+  }
+
+  function handleExportJson() {
+    setReportError(null)
+
+    try {
+      const report = generatedPolicyReport ?? buildPolicyReport()
+      setGeneratedPolicyReport(report)
+      downloadTextFile(
+        `${report.fileBaseName}.json`,
+        report.json,
+        'application/json;charset=utf-8',
+      )
+      setReportMessage('JSON evidence report downloaded.')
+    } catch (error) {
+      setReportError(getErrorMessage(error))
+    }
+  }
+
+  function handleExportMarkdown() {
+    setReportError(null)
+
+    try {
+      const report = generatedPolicyReport ?? buildPolicyReport()
+      setGeneratedPolicyReport(report)
+      downloadTextFile(
+        `${report.fileBaseName}.md`,
+        report.markdown,
+        'text/markdown;charset=utf-8',
+      )
+      setReportMessage('Markdown evidence report downloaded.')
+    } catch (error) {
+      setReportError(getErrorMessage(error))
+    }
+  }
 
   return (
     <div className="page">
@@ -785,6 +1047,99 @@ export function PolicyCenterPage() {
                           </li>
                         ))}
                       </ul>
+                    )}
+                  </div>
+
+                  <div className="metadata-item" style={{ marginTop: '16px' }}>
+                    <span className="metadata-label">Evidence Report / Scenario Export</span>
+                    <div className="form-actions" style={{ marginTop: '12px' }}>
+                      <button
+                        className="button"
+                        type="button"
+                        disabled={isDetailLoading}
+                        onClick={handleGenerateReport}
+                      >
+                        Generate Report
+                      </button>
+                      <button
+                        className="button button--secondary"
+                        type="button"
+                        disabled={isDetailLoading}
+                        onClick={() => void handleCopySummary()}
+                      >
+                        Copy Summary
+                      </button>
+                      <button
+                        className="button button--secondary"
+                        type="button"
+                        disabled={isDetailLoading}
+                        onClick={handleExportJson}
+                      >
+                        Export JSON
+                      </button>
+                      <button
+                        className="button button--ghost"
+                        type="button"
+                        disabled={isDetailLoading}
+                        onClick={handleExportMarkdown}
+                      >
+                        Export Markdown
+                      </button>
+                    </div>
+
+                    {reportError ? (
+                      <div className="notice notice--warning" style={{ marginTop: '16px' }}>
+                        {reportError}
+                      </div>
+                    ) : null}
+
+                    {reportMessage ? (
+                      <p className="entity-list-meta" style={{ marginTop: '16px' }}>
+                        {reportMessage}
+                      </p>
+                    ) : null}
+
+                    {generatedPolicyReport ? (
+                      <>
+                        <div className="metadata-item" style={{ marginTop: '16px' }}>
+                          <span className="metadata-label">Report Summary</span>
+                          <pre
+                            className="mono"
+                            style={{
+                              marginTop: '12px',
+                              marginBottom: 0,
+                              whiteSpace: 'pre-wrap',
+                              wordBreak: 'break-word',
+                              color: 'var(--text-primary)',
+                            }}
+                          >
+                            {generatedPolicyReport.summaryText}
+                          </pre>
+                        </div>
+
+                        <div className="metadata-item" style={{ marginTop: '16px' }}>
+                          <span className="metadata-label">Markdown Preview</span>
+                          <pre
+                            className="mono"
+                            style={{
+                              marginTop: '12px',
+                              marginBottom: 0,
+                              maxHeight: '360px',
+                              overflow: 'auto',
+                              whiteSpace: 'pre-wrap',
+                              wordBreak: 'break-word',
+                              color: 'var(--text-primary)',
+                            }}
+                          >
+                            {generatedPolicyReport.markdown}
+                          </pre>
+                        </div>
+                      </>
+                    ) : (
+                      <p className="entity-list-meta" style={{ marginTop: '16px' }}>
+                        Generate a concise operator report from the selected policy,
+                        live evidence, compliance state, drift summary, and recovery path.
+                      </p>
                     )}
                   </div>
                 </>
