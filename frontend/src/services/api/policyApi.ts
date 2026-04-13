@@ -1,4 +1,5 @@
 import type {
+  DemoPolicyStatusResponse,
   PolicyActionResponse,
   PolicyDriftSummaryResponse,
   PolicyEvidenceResponse,
@@ -59,4 +60,10 @@ export const policyApi = {
     apiRequest<PolicyVerificationsResponse>(
       `/api/policies/${encodePolicyId(policyId)}/verifications`,
     ),
+  getDemoStatus: () =>
+    apiRequest<DemoPolicyStatusResponse>('/api/policies/demo/block-ping/status'),
+  recoverBaselineDemo: () =>
+    apiRequest<Record<string, unknown>>('/api/policies/demo/recover-baseline', {
+      method: 'POST',
+    }),
 }

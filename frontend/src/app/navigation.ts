@@ -5,9 +5,25 @@ export const navigationItems = [
     description: 'System health, controller reachability, and topology overview.',
   },
   {
+    path: '/alert-center',
+    label: 'Alert Center',
+    description: 'Operational alerts for drift, stale telemetry, evidence gaps, and demo hygiene.',
+  },
+  {
+    path: '/demo-assistant',
+    label: 'Demo Assistant',
+    description: 'Scenario runbook, speaker cues, and safe operator actions for defense mode.',
+  },
+  {
     path: '/policies',
     label: 'Policy Center',
     description: 'Policy objects, compliance drift, and live enforcement evidence.',
+  },
+  {
+    path: '/model-viewer',
+    label: 'Model Viewer',
+    description:
+      'Read-only YANG-lite device and controller state snapshot for defense demo.',
   },
   {
     path: '/topology',

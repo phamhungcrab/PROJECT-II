@@ -10,6 +10,11 @@ import { appConfig } from '../config/appConfig'
 import { useApiResource } from '../hooks/useApiResource'
 import { policyApi } from '../services/api/policyApi'
 import { sdnApi } from '../services/api/sdnApi'
+import {
+  buildOperationalAlerts,
+  getAlertSeverityTone,
+  summarizeAlerts,
+} from '../utils/alertCenter'
 import { classifyNode, formatDateTime, formatLabel, formatNumber } from '../utils/formatters'
 
 interface DashboardData {
@@ -325,6 +330,26 @@ export function DashboardPage() {
   ]
   const closingStatement =
     'This project demonstrates more than monitoring. It shows a usable SDN management product with live enforcement evidence, closed-loop verification, drift awareness, and explicit recovery paths that make the lab operationally credible.'
+  const dashboardAlerts = buildOperationalAlerts({
+    checkedAt: latestSnapshot ?? new Date().toISOString(),
+    health: data?.health ?? null,
+    healthError: error,
+    inventory: data?.inventory ?? null,
+    policySummary: policySummaryQuery.data,
+    policySummaryError: policySummaryQuery.error,
+    driftSummary: policyDriftQuery.data,
+    driftError: policyDriftQuery.error,
+    demoStatus: policyStatus,
+    demoStatusError: policyStatusError,
+    ovsEvidence,
+    ovsEvidenceError,
+    latestSnapshot,
+  })
+  const dashboardAlertSummary = summarizeAlerts(dashboardAlerts)
+  const topDashboardAlerts = dashboardAlerts
+    .filter((alert) => alert.severity !== 'info')
+    .slice(0, 3)
+  const dashboardPrimaryAlert = topDashboardAlerts[0] ?? dashboardAlerts[0] ?? null
 
   function appendOperationLog(action: string, result: OperationLogEntry['result']) {
     setOperationLogs((current) =>
@@ -1035,6 +1060,145 @@ export function DashboardPage() {
               ) : null}
             </Panel>
           </div>
+
+          <Panel
+            title="Alert Summary"
+            description="Compact operator signal for active drift, stale state, evidence gaps, and demo hygiene issues."
+            className={defenseMode ? 'panel--defense-primary' : undefined}
+            action={
+              <StatusBadge
+                label={
+                  dashboardAlertSummary.critical_count > 0
+                    ? 'Critical'
+                    : dashboardAlertSummary.warning_count > 0
+                      ? 'Warning'
+                      : 'Stable'
+                }
+                tone={
+                  dashboardAlertSummary.critical_count > 0
+                    ? 'danger'
+                    : dashboardAlertSummary.warning_count > 0
+                      ? 'warning'
+                      : 'success'
+                }
+              />
+            }
+          >
+            <div className="mini-stats">
+              <div className="mini-stat">
+                <span>Active alerts</span>
+                <strong>{formatNumber(dashboardAlertSummary.active_alerts)}</strong>
+              </div>
+              <div className="mini-stat">
+                <span>Critical</span>
+                <strong>{formatNumber(dashboardAlertSummary.critical_count)}</strong>
+              </div>
+              <div className="mini-stat">
+                <span>Warning</span>
+                <strong>{formatNumber(dashboardAlertSummary.warning_count)}</strong>
+              </div>
+              <div className="mini-stat">
+                <span>Info</span>
+                <strong>{formatNumber(dashboardAlertSummary.info_count)}</strong>
+              </div>
+            </div>
+
+            <div
+              className="metadata-item"
+              style={{
+                marginTop: '16px',
+                background:
+                  dashboardAlertSummary.critical_count > 0
+                    ? 'var(--danger-soft)'
+                    : dashboardAlertSummary.warning_count > 0
+                      ? 'var(--warning-soft)'
+                      : 'var(--success-soft)',
+              }}
+            >
+              <span className="metadata-label">Primary Signal</span>
+              <strong className="metadata-value" style={{ marginTop: '12px' }}>
+                {dashboardPrimaryAlert?.title ?? 'No active faults detected'}
+              </strong>
+              <p className="entity-list-meta" style={{ marginTop: '10px' }}>
+                {dashboardPrimaryAlert?.summary ??
+                  'Current Dashboard, Policy Center, switch evidence, and model snapshot signals look aligned.'}
+              </p>
+            </div>
+
+            <div className="content-grid content-grid--two" style={{ marginTop: '16px' }}>
+              <div className="metadata-item">
+                <span className="metadata-label">Top Alerts</span>
+                {topDashboardAlerts.length > 0 ? (
+                  <ul className="entity-list" style={{ marginTop: '12px' }}>
+                    {topDashboardAlerts.map((alert) => (
+                      <li key={alert.id} className="entity-list-item">
+                        <div>
+                          <div className="entity-list-heading">
+                            <strong>{alert.title}</strong>
+                            <StatusBadge
+                              label={alert.severity.toUpperCase()}
+                              tone={getAlertSeverityTone(alert.severity)}
+                            />
+                          </div>
+                          <p className="entity-list-meta">{alert.summary}</p>
+                        </div>
+                      </li>
+                    ))}
+                  </ul>
+                ) : (
+                  <p className="entity-list-meta" style={{ marginTop: '12px' }}>
+                    No active warning or critical alerts are visible in the current snapshot.
+                  </p>
+                )}
+              </div>
+
+              <div className="metadata-item">
+                <span className="metadata-label">Suggested Path</span>
+                <p className="entity-list-meta" style={{ marginTop: '12px' }}>
+                  Use Alert Center for a richer fault view, then move to Policy Center,
+                  Flows, or Demo Assistant based on the suggested action.
+                </p>
+                <div className="form-actions" style={{ marginTop: '12px' }}>
+                  <Link
+                    className="button button--ghost"
+                    to="/alert-center"
+                    style={{
+                      display: 'inline-flex',
+                      alignItems: 'center',
+                      justifyContent: 'center',
+                      textDecoration: 'none',
+                    }}
+                  >
+                    Open Alert Center
+                  </Link>
+                  <Link
+                    className="button button--ghost"
+                    to="/policies"
+                    style={{
+                      display: 'inline-flex',
+                      alignItems: 'center',
+                      justifyContent: 'center',
+                      textDecoration: 'none',
+                    }}
+                  >
+                    Open Policy Center
+                  </Link>
+                  <Link
+                    className="button button--ghost"
+                    to="/flows"
+                    style={{
+                      display: 'inline-flex',
+                      alignItems: 'center',
+                      justifyContent: 'center',
+                      textDecoration: 'none',
+                    }}
+                  >
+                    Open Flows
+                  </Link>
+                </div>
+              </div>
+            </div>
+          </Panel>
 
           <div className="content-grid content-grid--two">
             <Panel

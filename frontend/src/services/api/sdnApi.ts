@@ -2,6 +2,7 @@ import type {
   FlowResponse,
   HealthResponse,
   InventoryNodesResponse,
+  OvsLiveFlowsResponse,
   TopologyRawResponse,
   TopologySummaryResponse,
 } from '../../types/sdn'
@@ -14,6 +15,7 @@ export const sdnApi = {
     apiRequest<TopologySummaryResponse>('/api/topology/summary'),
   getInventoryNodes: () =>
     apiRequest<InventoryNodesResponse>('/api/inventory/nodes'),
+  getOvsFlows: () => apiRequest<OvsLiveFlowsResponse>('/api/flows/ovs'),
   getFlows: (nodeId: string) =>
     apiRequest<FlowResponse>(`/api/flows/${encodeURIComponent(nodeId)}`),
 }

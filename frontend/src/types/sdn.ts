@@ -201,3 +201,21 @@ export interface FlowResponse {
   flow_count: number
   tables: FlowTable[]
 }
+
+export interface OvsLiveFlow {
+  flow_type: 'base' | 'policy' | 'unknown'
+  label: string
+  cookie: string
+  priority: number
+  match?: string
+  actions: string
+  raw?: string
+}
+
+export interface OvsLiveFlowsResponse {
+  bridge: string
+  protocol: string
+  flow_count: number
+  flows: OvsLiveFlow[]
+  raw_flows?: string
+}

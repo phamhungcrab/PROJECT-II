@@ -119,3 +119,10 @@ export interface PolicyDriftSummaryResponse {
   unknown_count: number
   drifted_policies: PolicyDriftItem[]
 }
+
+export interface DemoPolicyStatusResponse {
+  base_forwarding_enabled: boolean
+  block_ping_enabled: boolean
+  block_http_enabled: boolean
+  isolate_h1_enabled: boolean
+}
