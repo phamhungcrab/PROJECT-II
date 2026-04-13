@@ -1,6 +1,8 @@
 export type PolicyDesiredState = 'ENABLED' | 'DISABLED'
 export type PolicyLiveState = 'ENFORCED' | 'NOT_ENFORCED' | 'PARTIAL' | 'UNKNOWN'
 export type PolicyCompliance = 'COMPLIANT' | 'PARTIAL' | 'DRIFT' | 'UNKNOWN'
+export type PolicyOrigin = 'SEEDED' | 'TEMPLATE'
+export type PolicyExecutionStatus = 'SUPPORTED' | 'PREVIEW_ONLY'
 
 export interface PolicyRecord {
   id: string
@@ -19,6 +21,16 @@ export interface PolicyRecord {
   last_applied_at: string | null
   last_verified_at: string | null
   version: number
+  origin?: PolicyOrigin | null
+  template_type?: string | null
+  source_host?: string | null
+  destination_host?: string | null
+  protocol?: string | null
+  port?: number | null
+  direction?: string | null
+  action?: string | null
+  execution_status?: PolicyExecutionStatus | null
+  execution_reason?: string | null
 }
 
 export interface PolicyEventRecord {
@@ -58,8 +70,17 @@ export interface PolicyPreview {
   mapped_enforcement_action: string
   affected_target: string
   expected_impact: string
-  notes: string[]
+  notes?: string[] | null
   risk: string
+  execution_status?: PolicyExecutionStatus | null
+  execution_reason?: string | null
+  generated_policy_shape?: PolicyRecord | null
+  mapping_reference_policy_id?: string | null
+  expected_cookies?: string[] | null
+  expected_flow_labels?: string[] | null
+  supports_apply?: boolean | null
+  supports_verify?: boolean | null
+  supports_rollback?: boolean | null
 }
 
 export interface PolicyListResponse {
@@ -89,6 +110,29 @@ export interface PolicyActionResponse {
   verified?: boolean
   policy: PolicyRecord
   event: PolicyEventRecord
+}
+
+export interface PolicyTemplateRequest {
+  name: string
+  template_type: string
+  source_host: string
+  destination_host: string
+  protocol: 'icmp' | 'tcp' | 'ipv4'
+  port: number | null
+  direction: 'one-way' | 'two-way'
+  action: 'block'
+  description: string | null
+}
+
+export interface PolicyTemplateCreateResponse {
+  created: boolean
+  policy: PolicyRecord
+  preview: PolicyPreview
+}
+
+export interface PolicyTemplateCapability {
+  enabled: boolean
+  reason: string | null
 }
 
 export interface PolicyEvidenceResponse {

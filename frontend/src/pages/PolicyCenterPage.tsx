@@ -1,12 +1,18 @@
 import { useEffect, useState } from 'react'
+import {
+  PolicyTemplateBuilderPanel,
+  PolicyTemplateBuilderUnavailablePanel,
+} from '../components/policy/PolicyTemplateBuilderPanel'
 import { EmptyState } from '../components/state/EmptyState'
 import { ErrorState } from '../components/state/ErrorState'
 import { LoadingState } from '../components/state/LoadingState'
 import { Panel } from '../components/ui/Panel'
 import { StatCard } from '../components/ui/StatCard'
 import { StatusBadge } from '../components/ui/StatusBadge'
+import { appConfig } from '../config/appConfig'
 import { useApiResource } from '../hooks/useApiResource'
 import { policyApi } from '../services/api/policyApi'
+import { sdnApi } from '../services/api/sdnApi'
 import type {
   PolicyActionResponse,
   PolicyCompliance,
@@ -17,6 +23,7 @@ import type {
   PolicyRecord,
   PolicyVerificationsResponse,
 } from '../types/policy'
+import type { FlowTableFlow } from '../types/sdn'
 import { formatDateTime, formatLabel, formatNumber } from '../utils/formatters'
 
 type PolicyFilter = 'all' | 'compliant' | 'drift' | 'enabled'
@@ -28,6 +35,23 @@ interface GeneratedPolicyReport {
   summaryText: string
   markdown: string
   json: string
+}
+
+interface PolicyExpectation {
+  cookies: string[]
+  labels: string[]
+}
+
+interface AlignmentResult {
+  label:
+    | 'Fully aligned'
+    | 'Switch-only enforcement'
+    | 'Partial alignment'
+    | 'Controller evidence unavailable'
+    | 'Drift detected'
+    | 'Preview only'
+  tone: 'neutral' | 'success' | 'warning' | 'danger'
+  summary: string
 }
 
 function getErrorMessage(error: unknown) {
@@ -84,6 +108,53 @@ function formatState(value: string | null | undefined) {
   return value ? formatLabel(value) : 'N/A'
 }
 
+function formatOptionalLabel(
+  value: string | null | undefined,
+  fallback = 'N/A',
+) {
+  return value ? formatLabel(value) : fallback
+}
+
+function getPolicyOrigin(policy: PolicyRecord | null | undefined) {
+  return policy?.origin === 'TEMPLATE' ? 'TEMPLATE' : 'SEEDED'
+}
+
+function getPolicyExecutionStatus(policy: PolicyRecord | null | undefined) {
+  return policy?.execution_status === 'PREVIEW_ONLY'
+    ? 'PREVIEW_ONLY'
+    : 'SUPPORTED'
+}
+
+function getPolicyExecutionReason(policy: PolicyRecord | null | undefined) {
+  return policy?.execution_reason ?? null
+}
+
+function getPreviewExecutionStatus(preview: PolicyPreview | null | undefined) {
+  return preview?.execution_status === 'PREVIEW_ONLY'
+    ? 'PREVIEW_ONLY'
+    : 'SUPPORTED'
+}
+
+function getPreviewExecutionReason(preview: PolicyPreview | null | undefined) {
+  return preview?.execution_reason ?? null
+}
+
+function getPreviewNotes(preview: PolicyPreview | null | undefined) {
+  return Array.isArray(preview?.notes) ? preview.notes : []
+}
+
+function getPreviewExpectedCookies(preview: PolicyPreview | null | undefined) {
+  return Array.isArray(preview?.expected_cookies) ? preview.expected_cookies : []
+}
+
+function getPreviewExpectedFlowLabels(
+  preview: PolicyPreview | null | undefined,
+) {
+  return Array.isArray(preview?.expected_flow_labels)
+    ? preview.expected_flow_labels
+    : []
+}
+
 function summarizeEvidenceLabels(evidence: PolicyEvidenceResponse | null) {
   const latestEvidence = evidence?.evidence[0]
   if (!latestEvidence || latestEvidence.relevant_flows.length === 0) {
@@ -94,6 +165,10 @@ function summarizeEvidenceLabels(evidence: PolicyEvidenceResponse | null) {
 }
 
 function buildRecoveryNote(policy: PolicyRecord) {
+  if (getPolicyExecutionStatus(policy) === 'PREVIEW_ONLY') {
+    return 'This template policy is preview-only, so rollback is not applicable. Create the object for planning, then add a supported execution mapping in a future batch if live enforcement is required.'
+  }
+
   if (policy.id === 'baseline_forwarding') {
     return 'Use Apply to restore baseline forwarding again if the NORMAL flow is missing. Verify can be used to confirm switch alignment.'
   }
@@ -115,6 +190,43 @@ function downloadTextFile(
   anchor.click()
   document.body.removeChild(anchor)
   URL.revokeObjectURL(objectUrl)
+}
+
+function getPolicyExpectation(preview: PolicyPreview | null): PolicyExpectation {
+  return {
+    cookies: getPreviewExpectedCookies(preview),
+    labels: getPreviewExpectedFlowLabels(preview),
+  }
+}
+
+function getExecutionTone(
+  executionStatus: 'SUPPORTED' | 'PREVIEW_ONLY' | null | undefined,
+): 'success' | 'warning' {
+  return executionStatus === 'SUPPORTED' ? 'success' : 'warning'
+}
+
+function getExecutionLabel(
+  executionStatus: 'SUPPORTED' | 'PREVIEW_ONLY' | null | undefined,
+) {
+  return executionStatus === 'SUPPORTED' ? 'Live Mapped' : 'Preview Only'
+}
+
+function summarizeControllerActions(flow: FlowTableFlow) {
+  const actions =
+    flow.instructions?.instruction?.flatMap(
+      (instruction) => instruction['apply-actions']?.action ?? [],
+    ) ?? []
+
+  if (actions.length === 0) {
+    return 'No apply-actions returned'
+  }
+
+  return actions
+    .map((action) => {
+      const output = action['output-action']?.['output-node-connector']
+      return output ? `Output ${output}` : `Action ${action.order}`
+    })
+    .join(' · ')
 }
 
 export function PolicyCenterPage() {
@@ -145,6 +257,14 @@ export function PolicyCenterPage() {
   const summaryQuery = useApiResource(policyApi.getSummary, [])
   const eventsQuery = useApiResource(policyApi.getEvents, [])
   const driftQuery = useApiResource(policyApi.getDriftSummary, [])
+  const templateCapabilityQuery = useApiResource(
+    policyApi.getTemplateCapability,
+    [],
+  )
+  const controllerFlowQuery = useApiResource(
+    () => sdnApi.getFlows(appConfig.defaultFlowNodeId),
+    [appConfig.defaultFlowNodeId],
+  )
 
   const policies = policyQuery.data?.policies
   const policyList = policies ?? []
@@ -173,7 +293,18 @@ export function PolicyCenterPage() {
       return true
     }
 
-    const searchableText = [policy.name, policy.type, policy.target]
+    const searchableText = [
+      policy.name,
+      policy.type,
+      policy.target,
+      policy.template_type ?? '',
+      policy.source_host ?? '',
+      policy.destination_host ?? '',
+      policy.protocol ?? '',
+      policy.direction ?? '',
+      policy.action ?? '',
+      policy.execution_status,
+    ]
       .join(' ')
       .toLowerCase()
 
@@ -237,10 +368,22 @@ export function PolicyCenterPage() {
     summaryQuery.reload()
     eventsQuery.reload()
     driftQuery.reload()
+    templateCapabilityQuery.reload()
+    controllerFlowQuery.reload()
 
     if (policyId) {
       await loadPolicyWorkspace(policyId)
     }
+  }
+
+  async function handleTemplateCreated(policyId: string) {
+    setSelectedPolicyId(policyId)
+    setActionError(null)
+    setActionResult(null)
+    setGeneratedPolicyReport(null)
+    setReportMessage(null)
+    setReportError(null)
+    await refreshPolicyCenter(policyId)
   }
 
   async function handlePreview(policyId: string) {
@@ -294,6 +437,169 @@ export function PolicyCenterPage() {
   const latestEvidence = policyEvidence?.evidence[0] ?? null
   const latestVerification = policyVerifications?.verifications[0] ?? null
   const evidenceLabels = summarizeEvidenceLabels(policyEvidence)
+  const templateCapability = templateCapabilityQuery.data
+  const policyExpectation = getPolicyExpectation(policyPreview)
+  const selectedPolicyOrigin = getPolicyOrigin(selectedPolicy)
+  const selectedPolicyExecutionStatus = getPolicyExecutionStatus(selectedPolicy)
+  const previewExecutionStatus = getPreviewExecutionStatus(policyPreview)
+  const previewExecutionReason = getPreviewExecutionReason(policyPreview)
+  const previewNotes = getPreviewNotes(policyPreview)
+  const previewExpectedCookies = getPreviewExpectedCookies(policyPreview)
+  const previewExpectedFlowLabels = getPreviewExpectedFlowLabels(policyPreview)
+  const controllerFlows =
+    controllerFlowQuery.data?.tables.flatMap((table) =>
+      (table.flows ?? []).map((flow) => ({
+        flow_id: flow.flow_id,
+        table_id: flow.table_id ?? table.table_id,
+        cookie: flow.cookie ?? 'No cookie',
+        priority: flow.priority,
+        actions: summarizeControllerActions(flow),
+      })),
+    ) ?? []
+  const relatedControllerFlows = controllerFlows.filter((flow) =>
+    policyExpectation.cookies.includes(flow.cookie),
+  )
+  const controllerEvidenceStatus =
+    selectedPolicyExecutionStatus === 'PREVIEW_ONLY'
+      ? {
+          label: 'Preview Only',
+          tone: 'warning' as const,
+          summary:
+            previewExecutionReason ??
+            'No controller evidence is expected because this policy has no live execution mapping in v1.',
+        }
+      : relatedControllerFlows.length > 0
+        ? {
+            label: 'Observed',
+            tone: 'success' as const,
+            summary: `${formatNumber(relatedControllerFlows.length)} exact controller entr${
+              relatedControllerFlows.length === 1 ? 'y' : 'ies'
+            } matched the expected policy cookies on ${appConfig.defaultFlowNodeId}.`,
+          }
+        : controllerFlowQuery.data
+          ? {
+              label: 'Partial',
+              tone: 'warning' as const,
+              summary: `ODL flow data is available for ${appConfig.defaultFlowNodeId}, but no exact controller cookie match was confirmed for this policy. Current demo enforcement may be switch-direct.`,
+            }
+          : controllerFlowQuery.error
+            ? {
+                label: 'Unavailable',
+                tone: 'neutral' as const,
+                summary:
+                  'Controller evidence is unavailable right now. The comparison keeps switch-side evidence visible and explicit.',
+              }
+            : {
+                label: 'Unavailable',
+                tone: 'neutral' as const,
+                summary: 'Controller evidence has not been loaded yet.',
+              }
+  const switchEvidenceCount = latestEvidence?.flow_count ?? 0
+  const switchEvidenceFlows = latestEvidence?.relevant_flows ?? []
+  const alignmentResult: AlignmentResult = (() => {
+    if (!selectedPolicy) {
+      return {
+        label: 'Controller evidence unavailable',
+        tone: 'neutral',
+        summary: 'Select a policy to compare management intent with controller and switch evidence.',
+      }
+    }
+
+    if (selectedPolicyExecutionStatus === 'PREVIEW_ONLY') {
+      return {
+        label: 'Preview only',
+        tone: 'warning',
+        summary:
+          previewExecutionReason ??
+          'This policy object is intentionally visible in inventory but does not have a live enforcement mapping in v1.',
+      }
+    }
+
+    if (selectedPolicy.compliance === 'DRIFT') {
+      return {
+        label: 'Drift detected',
+        tone: 'danger',
+        summary:
+          'Policy intent and live switch state are not aligned. This is the strongest signal that operator attention is required.',
+      }
+    }
+
+    if (
+      selectedPolicy.compliance === 'PARTIAL' ||
+      selectedPolicy.live_state === 'PARTIAL'
+    ) {
+      return {
+        label: 'Partial alignment',
+        tone: 'warning',
+        summary:
+          'The policy is only partially represented across the management and enforcement layers. Verify the policy and inspect switch evidence before continuing.',
+      }
+    }
+
+    if (
+      selectedPolicy.desired_state === 'DISABLED' &&
+      selectedPolicy.compliance === 'COMPLIANT' &&
+      switchEvidenceCount === 0
+    ) {
+      return {
+        label: 'Fully aligned',
+        tone: 'success',
+        summary:
+          'The policy is intentionally cleared and the switch currently shows no related evidence flows, which is aligned with the desired state.',
+      }
+    }
+
+    if (
+      selectedPolicy.compliance === 'COMPLIANT' &&
+      switchEvidenceCount > 0 &&
+      relatedControllerFlows.length > 0
+    ) {
+      return {
+        label: 'Fully aligned',
+        tone: 'success',
+        summary:
+          'Policy intent is visible in Policy Center, related controller entries are observed, and switch-side evidence confirms live enforcement.',
+      }
+    }
+
+    if (
+      selectedPolicy.compliance === 'COMPLIANT' &&
+      switchEvidenceCount > 0 &&
+      controllerFlowQuery.error
+    ) {
+      return {
+        label: 'Controller evidence unavailable',
+        tone: 'neutral',
+        summary:
+          'Switch-side enforcement is confirmed, but controller evidence could not be loaded in this view.',
+      }
+    }
+
+    if (selectedPolicy.compliance === 'COMPLIANT' && switchEvidenceCount > 0) {
+      return {
+        label: 'Switch-only enforcement',
+        tone: 'warning',
+        summary:
+          'Policy intent is aligned with switch-side enforcement, but this project currently cannot prove an exact controller-side flow match for the selected policy.',
+      }
+    }
+
+    return {
+      label: 'Controller evidence unavailable',
+      tone: 'neutral',
+      summary:
+        'Controller evidence is not strong enough to prove a direct mapping here. Policy Center and switch evidence remain the primary sources.',
+    }
+  })()
+  const comparisonSummary = selectedPolicy
+    ? selectedPolicyExecutionStatus === 'PREVIEW_ONLY'
+      ? `Policy intent is visible in Policy Center, but this template remains preview-only. No controller or switch-side execution mapping is expected until a future live mapping is implemented.`
+      : `Policy intent is visible in Policy Center. Controller flow view on ${appConfig.defaultFlowNodeId} shows ${formatNumber(relatedControllerFlows.length)} exact related entr${
+          relatedControllerFlows.length === 1 ? 'y' : 'ies'
+        }. Switch evidence shows ${formatNumber(
+          switchEvidenceCount,
+        )} live entr${switchEvidenceCount === 1 ? 'y' : 'ies'}. Overall alignment is ${alignmentResult.label}.`
+    : 'Select a policy to compare intent, controller visibility, and switch-side enforcement.'
 
   function buildPolicyReport() {
     if (!selectedPolicy || !policyPreview) {
@@ -338,14 +644,27 @@ export function PolicyCenterPage() {
         name: selectedPolicy.name,
         id: selectedPolicy.id,
         type: selectedPolicy.type,
+        origin: selectedPolicyOrigin,
+        template_type: selectedPolicy.template_type ?? null,
+        source_host: selectedPolicy.source_host ?? null,
+        destination_host: selectedPolicy.destination_host ?? null,
+        protocol: selectedPolicy.protocol ?? null,
+        port: selectedPolicy.port ?? null,
+        direction: selectedPolicy.direction ?? null,
+        action: selectedPolicy.action ?? null,
         target: selectedPolicy.target,
         description: selectedPolicy.description,
       },
       intended_enforcement: {
         mapped_enforcement_action: policyPreview.mapped_enforcement_action,
         expected_impact: policyPreview.expected_impact,
-        notes: policyPreview.notes,
+        notes: previewNotes,
         risk: policyPreview.risk,
+        execution_status: previewExecutionStatus,
+        execution_reason: previewExecutionReason,
+        mapping_reference_policy_id: policyPreview.mapping_reference_policy_id ?? null,
+        expected_cookies: previewExpectedCookies,
+        expected_flow_labels: previewExpectedFlowLabels,
       },
       compliance_result: {
         desired_state: selectedPolicy.desired_state,
@@ -375,9 +694,11 @@ export function PolicyCenterPage() {
 
     const summaryText = [
       `Policy: ${selectedPolicy.name} (${selectedPolicy.id})`,
+      `Origin: ${selectedPolicyOrigin}`,
       `Desired state: ${selectedPolicy.desired_state}`,
       `Live state: ${selectedPolicy.live_state}`,
       `Compliance: ${selectedPolicy.compliance}`,
+      `Execution support: ${previewExecutionStatus}${previewExecutionReason ? ` (${previewExecutionReason})` : ''}`,
       `Latest evidence: ${latestEvidence?.summary ?? 'No evidence snapshot available yet.'}`,
       `Drift watch: ${formatNumber(driftSummary.drift_count)} drift / ${formatNumber(driftSummary.partial_count)} partial / ${formatNumber(driftSummary.compliant_count)} compliant`,
       `Recovery path: ${recoveryNote}`,
@@ -392,14 +713,27 @@ export function PolicyCenterPage() {
       `- Name: ${selectedPolicy.name}`,
       `- ID: ${selectedPolicy.id}`,
       `- Type: ${formatLabel(selectedPolicy.type)}`,
+      `- Origin: ${formatOptionalLabel(selectedPolicyOrigin)}`,
+      `- Template type: ${formatOptionalLabel(selectedPolicy.template_type)}`,
+      `- Source host: ${selectedPolicy.source_host ?? 'N/A'}`,
+      `- Destination host: ${selectedPolicy.destination_host ?? 'N/A'}`,
+      `- Protocol: ${formatOptionalLabel(selectedPolicy.protocol)}`,
+      `- Port: ${selectedPolicy.port ?? 'N/A'}`,
+      `- Direction: ${formatOptionalLabel(selectedPolicy.direction)}`,
+      `- Action: ${formatOptionalLabel(selectedPolicy.action)}`,
       `- Target: ${selectedPolicy.target}`,
       `- Description: ${selectedPolicy.description}`,
       ``,
       `## Intended Enforcement`,
       `- Mapped enforcement action: ${policyPreview.mapped_enforcement_action}`,
       `- Expected impact: ${policyPreview.expected_impact}`,
-      `- Notes: ${policyPreview.notes.join(' | ') || 'N/A'}`,
+      `- Notes: ${previewNotes.join(' | ') || 'N/A'}`,
       `- Risk: ${policyPreview.risk}`,
+      `- Execution status: ${formatOptionalLabel(previewExecutionStatus)}`,
+      `- Execution reason: ${previewExecutionReason ?? 'N/A'}`,
+      `- Mapping reference: ${policyPreview.mapping_reference_policy_id ?? 'N/A'}`,
+      `- Expected cookies: ${previewExpectedCookies.join(', ') || 'N/A'}`,
+      `- Expected flow labels: ${previewExpectedFlowLabels.join(', ') || 'N/A'}`,
       ``,
       `## Live Enforcement Evidence`,
       `- Desired state: ${selectedPolicy.desired_state}`,
@@ -582,6 +916,15 @@ export function PolicyCenterPage() {
             />
           </div>
 
+          {templateCapability?.enabled ? (
+            <PolicyTemplateBuilderPanel onTemplateCreated={handleTemplateCreated} />
+          ) : (
+            <PolicyTemplateBuilderUnavailablePanel
+              isChecking={templateCapabilityQuery.isLoading}
+              reason={templateCapability?.reason ?? null}
+            />
+          )}
+
           <Panel
             title="Policy Inventory"
             description="Search, filter, inspect, and operate on the current policy set."
@@ -628,7 +971,7 @@ export function PolicyCenterPage() {
                 type="search"
                 value={searchQuery}
                 onChange={(event) => setSearchQuery(event.target.value)}
-                placeholder="Search name, type, target"
+                placeholder="Search name, type, target, protocol"
                 style={{ minWidth: '260px', maxWidth: '360px' }}
               />
             </div>
@@ -664,6 +1007,8 @@ export function PolicyCenterPage() {
                   <tbody>
                     {filteredPolicies.map((policy) => {
                       const isSelected = policy.id === selectedPolicyId
+                      const supportsLiveActions =
+                        getPolicyExecutionStatus(policy) === 'SUPPORTED'
 
                       return (
                         <tr
@@ -684,9 +1029,35 @@ export function PolicyCenterPage() {
                             <div className="cell-stack">
                               <strong>{policy.name}</strong>
                               <span className="cell-muted mono">{policy.id}</span>
+                              <div className="chip-row">
+                                <span className="chip">
+                                  {getPolicyOrigin(policy) === 'TEMPLATE'
+                                    ? 'Template'
+                                    : 'Seeded'}
+                                </span>
+                                <span className="chip">
+                                  {getExecutionLabel(getPolicyExecutionStatus(policy))}
+                                </span>
+                                {policy.template_type ? (
+                                  <span className="chip">
+                                    {formatLabel(policy.template_type)}
+                                  </span>
+                                ) : null}
+                              </div>
                             </div>
                           </td>
-                          <td>{formatLabel(policy.type)}</td>
+                          <td>
+                            <div className="cell-stack">
+                              <strong>{formatLabel(policy.type)}</strong>
+                              {policy.protocol ? (
+                                <span className="cell-muted">
+                                  {formatLabel(policy.protocol)}
+                                  {policy.port !== null ? `/${policy.port}` : ''} ·{' '}
+                                  {formatLabel(policy.direction ?? 'n/a')}
+                                </span>
+                              ) : null}
+                            </div>
+                          </td>
                           <td className="mono">{policy.target}</td>
                           <td>
                             <StatusBadge
@@ -728,7 +1099,12 @@ export function PolicyCenterPage() {
                                 className="button"
                                 type="button"
                                 style={{ padding: '8px 12px' }}
-                                disabled={Boolean(actionState)}
+                                disabled={Boolean(actionState) || !supportsLiveActions}
+                                title={
+                                  supportsLiveActions
+                                    ? undefined
+                                    : getPolicyExecutionReason(policy) ?? 'Preview-only policy'
+                                }
                                 onClick={(event) => {
                                   event.stopPropagation()
                                   void runPolicyAction(policy.id, 'apply')
@@ -743,7 +1119,12 @@ export function PolicyCenterPage() {
                                 className="button button--secondary"
                                 type="button"
                                 style={{ padding: '8px 12px' }}
-                                disabled={Boolean(actionState)}
+                                disabled={Boolean(actionState) || !supportsLiveActions}
+                                title={
+                                  supportsLiveActions
+                                    ? undefined
+                                    : getPolicyExecutionReason(policy) ?? 'Preview-only policy'
+                                }
                                 onClick={(event) => {
                                   event.stopPropagation()
                                   void runPolicyAction(policy.id, 'verify')
@@ -758,7 +1139,12 @@ export function PolicyCenterPage() {
                                 className="button button--secondary"
                                 type="button"
                                 style={{ padding: '8px 12px' }}
-                                disabled={Boolean(actionState)}
+                                disabled={Boolean(actionState) || !supportsLiveActions}
+                                title={
+                                  supportsLiveActions
+                                    ? undefined
+                                    : getPolicyExecutionReason(policy) ?? 'Preview-only policy'
+                                }
                                 onClick={(event) => {
                                   event.stopPropagation()
                                   void runPolicyAction(policy.id, 'rollback')
@@ -815,6 +1201,15 @@ export function PolicyCenterPage() {
                       <strong className="metadata-value mono">{selectedPolicy.target}</strong>
                     </div>
                     <div className="metadata-item">
+                      <span className="metadata-label">Origin</span>
+                      <div style={{ marginTop: '8px' }}>
+                        <StatusBadge
+                          label={formatOptionalLabel(selectedPolicyOrigin)}
+                          tone={selectedPolicyOrigin === 'TEMPLATE' ? 'warning' : 'success'}
+                        />
+                      </div>
+                    </div>
+                    <div className="metadata-item">
                       <span className="metadata-label">Desired State</span>
                       <div style={{ marginTop: '8px' }}>
                         <StatusBadge
@@ -842,6 +1237,15 @@ export function PolicyCenterPage() {
                       </div>
                     </div>
                     <div className="metadata-item">
+                      <span className="metadata-label">Execution</span>
+                      <div style={{ marginTop: '8px' }}>
+                        <StatusBadge
+                          label={getExecutionLabel(selectedPolicyExecutionStatus)}
+                          tone={getExecutionTone(selectedPolicyExecutionStatus)}
+                        />
+                      </div>
+                    </div>
+                    <div className="metadata-item">
                       <span className="metadata-label">Last Applied</span>
                       <strong className="metadata-value">
                         {formatDateTime(selectedPolicy.last_applied_at)}
@@ -852,6 +1256,35 @@ export function PolicyCenterPage() {
                       <strong className="metadata-value">
                         {formatDateTime(selectedPolicy.last_verified_at)}
                       </strong>
+                    </div>
+                  </div>
+
+                  <div className="metadata-item" style={{ marginTop: '16px' }}>
+                    <span className="metadata-label">Template Metadata</span>
+                    <div className="chip-row" style={{ marginTop: '12px' }}>
+                      <span className="chip">
+                        Template {formatOptionalLabel(selectedPolicy.template_type)}
+                      </span>
+                      <span className="chip">
+                        Source {selectedPolicy.source_host ?? 'N/A'}
+                      </span>
+                      <span className="chip">
+                        Destination {selectedPolicy.destination_host ?? 'N/A'}
+                      </span>
+                      <span className="chip">
+                        Protocol {formatOptionalLabel(selectedPolicy.protocol)}
+                      </span>
+                      {selectedPolicy.port !== null &&
+                      selectedPolicy.port !== undefined ? (
+                        <span className="chip">Port {selectedPolicy.port}</span>
+                      ) : null}
+                      <span className="chip">
+                        Direction {formatOptionalLabel(selectedPolicy.direction)}
+                      </span>
+                      <span className="chip">
+                        Action {formatOptionalLabel(selectedPolicy.action)}
+                      </span>
+                      <span className="chip">Version {selectedPolicy.version}</span>
                     </div>
                   </div>
 
@@ -870,14 +1303,19 @@ export function PolicyCenterPage() {
                     <p className="entity-list-meta" style={{ marginTop: '10px' }}>
                       {policyPreview?.expected_impact ?? 'Expected impact unavailable.'}
                     </p>
+                    {previewExecutionReason ? (
+                      <p className="entity-list-meta" style={{ marginTop: '10px' }}>
+                        {previewExecutionReason}
+                      </p>
+                    ) : null}
                   </div>
 
                   <div className="content-grid" style={{ marginTop: '16px' }}>
                     <div className="metadata-item">
                       <span className="metadata-label">Notes</span>
                       <div className="chip-row" style={{ marginTop: '12px' }}>
-                        {(policyPreview?.notes ?? []).length > 0 ? (
-                          policyPreview?.notes.map((note) => (
+                        {previewNotes.length > 0 ? (
+                          previewNotes.map((note) => (
                             <span key={note} className="chip">
                               {note}
                             </span>
@@ -892,6 +1330,11 @@ export function PolicyCenterPage() {
                       <p className="entity-list-meta" style={{ marginTop: '12px' }}>
                         {policyPreview?.risk ?? 'Risk information unavailable.'}
                       </p>
+                      {policyPreview?.mapping_reference_policy_id ? (
+                        <p className="entity-list-meta" style={{ marginTop: '10px' }}>
+                          Current mapping reference: {policyPreview.mapping_reference_policy_id}
+                        </p>
+                      ) : null}
                     </div>
                   </div>
 
@@ -977,6 +1420,172 @@ export function PolicyCenterPage() {
                         )}
                       </div>
                     ) : null}
+                  </div>
+
+                  <div className="metadata-item" style={{ marginTop: '16px' }}>
+                    <span className="metadata-label">Controller vs Switch Evidence Matrix</span>
+                    <div
+                      className="metadata-grid"
+                      style={{
+                        marginTop: '12px',
+                        gridTemplateColumns: 'repeat(2, minmax(0, 1fr))',
+                      }}
+                    >
+                      <div className="metadata-item">
+                        <span className="metadata-label">Intent</span>
+                        <strong className="metadata-value">{selectedPolicy.name}</strong>
+                        <div style={{ marginTop: '10px' }}>
+                          <StatusBadge
+                            label={getExecutionLabel(selectedPolicyExecutionStatus)}
+                            tone={getExecutionTone(selectedPolicyExecutionStatus)}
+                          />
+                        </div>
+                        <p className="entity-list-meta" style={{ marginTop: '10px' }}>
+                          Target {selectedPolicy.target} · Desired {formatState(selectedPolicy.desired_state)}
+                        </p>
+                        <p className="entity-list-meta" style={{ marginTop: '10px' }}>
+                          {policyPreview?.mapped_enforcement_action ?? 'Mapped enforcement action unavailable.'}
+                        </p>
+                        <p className="entity-list-meta" style={{ marginTop: '10px' }}>
+                          {policyPreview?.expected_impact ?? 'Expected effect unavailable.'}
+                        </p>
+                      </div>
+
+                      <div className="metadata-item">
+                        <span className="metadata-label">Controller View</span>
+                        {controllerFlowQuery.isLoading && !controllerFlowQuery.data ? (
+                          <p className="entity-list-meta" style={{ marginTop: '12px' }}>
+                            Loading controller flow evidence for {appConfig.defaultFlowNodeId}...
+                          </p>
+                        ) : (
+                          <>
+                            <div style={{ marginTop: '10px' }}>
+                              <StatusBadge
+                                label={controllerEvidenceStatus.label}
+                                tone={controllerEvidenceStatus.tone}
+                              />
+                            </div>
+                            {controllerFlowQuery.error ? (
+                              <p className="entity-list-meta" style={{ marginTop: '10px' }}>
+                                Latest controller refresh failed: {controllerFlowQuery.error}
+                              </p>
+                            ) : null}
+                            <p className="entity-list-meta" style={{ marginTop: '10px' }}>
+                              {controllerEvidenceStatus.summary}
+                            </p>
+                            {relatedControllerFlows.length > 0 ? (
+                              <ul className="entity-list" style={{ marginTop: '12px' }}>
+                                {relatedControllerFlows.slice(0, 3).map((flow) => (
+                                  <li
+                                    key={`${flow.flow_id}-${flow.cookie}`}
+                                    className="entity-list-item"
+                                  >
+                                    <div>
+                                      <div className="entity-list-heading">
+                                        <strong className="mono">{flow.flow_id}</strong>
+                                      </div>
+                                      <p className="entity-list-meta">
+                                        Cookie {flow.cookie} · Priority {formatNumber(flow.priority)}
+                                      </p>
+                                      <p className="entity-list-meta">{flow.actions}</p>
+                                    </div>
+                                    <span className="entity-list-trailing">
+                                      Table {formatNumber(flow.table_id)}
+                                    </span>
+                                  </li>
+                                ))}
+                              </ul>
+                            ) : (
+                              <p className="entity-list-meta" style={{ marginTop: '12px' }}>
+                                {selectedPolicyExecutionStatus === 'PREVIEW_ONLY'
+                                  ? 'No controller-side flow IDs are expected because this policy has no live execution mapping.'
+                                  : 'No exact controller-side flow IDs or cookies were confirmed for this policy.'}
+                              </p>
+                            )}
+                          </>
+                        )}
+                      </div>
+
+                      <div className="metadata-item">
+                        <span className="metadata-label">Switch View</span>
+                        <div style={{ marginTop: '10px' }}>
+                          <StatusBadge
+                            label={formatState(selectedPolicy.live_state)}
+                            tone={getLiveStateTone(selectedPolicy.live_state)}
+                          />
+                        </div>
+                        <p className="entity-list-meta" style={{ marginTop: '10px' }}>
+                          Switch evidence shows {formatNumber(switchEvidenceCount)} likely related entr
+                          {switchEvidenceCount === 1 ? 'y' : 'ies'} with compliance{' '}
+                          {formatState(selectedPolicy.compliance)}.
+                        </p>
+                        {switchEvidenceFlows.length > 0 ? (
+                          <ul className="entity-list" style={{ marginTop: '12px' }}>
+                            {switchEvidenceFlows.map((flow) => (
+                              <li key={`${flow.cookie}-${flow.label}`} className="entity-list-item">
+                                <div>
+                                  <div className="entity-list-heading">
+                                    <strong>{flow.label}</strong>
+                                  </div>
+                                  <p className="entity-list-meta">
+                                    Cookie {flow.cookie} · Priority {formatNumber(flow.priority)}
+                                  </p>
+                                  <p className="entity-list-meta">{flow.actions}</p>
+                                </div>
+                                <span className="entity-list-trailing">
+                                  {formatLabel(flow.flow_type)}
+                                </span>
+                              </li>
+                            ))}
+                          </ul>
+                        ) : (
+                          <p className="entity-list-meta" style={{ marginTop: '12px' }}>
+                            No compact switch evidence flows are currently recorded for this policy.
+                          </p>
+                        )}
+                      </div>
+
+                      <div className="metadata-item">
+                        <span className="metadata-label">Alignment</span>
+                        <div style={{ marginTop: '10px' }}>
+                          <StatusBadge
+                            label={alignmentResult.label}
+                            tone={alignmentResult.tone}
+                          />
+                        </div>
+                        <p className="entity-list-meta" style={{ marginTop: '10px' }}>
+                          {alignmentResult.summary}
+                        </p>
+                        <div className="chip-row" style={{ marginTop: '12px' }}>
+                          {policyExpectation.labels.length > 0 ||
+                          policyExpectation.cookies.length > 0 ? (
+                            <>
+                              {policyExpectation.labels.map((label) => (
+                                <span key={label} className="chip">
+                                  {label}
+                                </span>
+                              ))}
+                              {policyExpectation.cookies.map((cookie) => (
+                                <span key={cookie} className="chip">
+                                  {cookie}
+                                </span>
+                              ))}
+                            </>
+                          ) : (
+                            <span className="cell-muted">
+                              No execution cookies or flow labels are expected for this policy.
+                            </span>
+                          )}
+                        </div>
+                      </div>
+                    </div>
+                  </div>
+
+                  <div className="metadata-item" style={{ marginTop: '16px' }}>
+                    <span className="metadata-label">Comparison Summary</span>
+                    <p className="entity-list-meta" style={{ marginTop: '12px' }}>
+                      {comparisonSummary}
+                    </p>
                   </div>
 
                   <div className="metadata-item" style={{ marginTop: '16px' }}>
