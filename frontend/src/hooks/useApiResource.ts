@@ -1,4 +1,5 @@
 import { useEffect, useRef, useState } from 'react'
+import { presenterRefreshEventName } from '../app/presenterDirector'
 
 function getErrorMessage(error: unknown) {
   if (error instanceof Error) {
@@ -54,6 +55,22 @@ export function useApiResource<T>(
       active = false
     }
   }, [dependencyKey, reloadToken])
+
+  useEffect(() => {
+    if (typeof window === 'undefined') {
+      return
+    }
+
+    const handlePresenterRefresh = () => {
+      setReloadToken((value) => value + 1)
+    }
+
+    window.addEventListener(presenterRefreshEventName, handlePresenterRefresh)
+
+    return () => {
+      window.removeEventListener(presenterRefreshEventName, handlePresenterRefresh)
+    }
+  }, [])
 
   return {
     data,

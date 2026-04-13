@@ -1,8 +1,10 @@
 import { useEffect, useRef, useState } from 'react'
 import { NavLink, Outlet, useLocation } from 'react-router-dom'
+import { presenterHotkeyLabel } from '../../app/presenterDirector'
 import type { DefenseModeOutletContext } from '../../app/defenseMode'
 import { navigationItems } from '../../app/navigation'
 import { appConfig } from '../../config/appConfig'
+import { PresenterRail } from '../presenter/PresenterRail'
 import { StatusBadge } from '../ui/StatusBadge'
 
 const checkedAtFormatter = new Intl.DateTimeFormat('en-US', {
@@ -10,13 +12,26 @@ const checkedAtFormatter = new Intl.DateTimeFormat('en-US', {
   timeStyle: 'short',
 })
 
+function readStoredFlag(key: string) {
+  if (typeof window === 'undefined') {
+    return false
+  }
+
+  return window.localStorage.getItem(key) === 'enabled'
+}
+
 export function AppShell() {
   const [defenseMode, setDefenseMode] = useState(() => {
-    if (typeof window === 'undefined') {
-      return false
-    }
-
-    return window.localStorage.getItem('sdn-defense-mode') === 'enabled'
+    return readStoredFlag('sdn-defense-mode')
+  })
+  const [presenterMode, setPresenterMode] = useState(() => {
+    return readStoredFlag('sdn-presenter-mode')
+  })
+  const [presenterRailOpen, setPresenterRailOpen] = useState(() => {
+    return readStoredFlag('sdn-defense-mode') || readStoredFlag('sdn-presenter-rail-open')
+  })
+  const [spotlightMode, setSpotlightMode] = useState(() => {
+    return readStoredFlag('sdn-presenter-spotlight')
   })
   const mainShellRef = useRef<HTMLDivElement | null>(null)
   const location = useLocation()
@@ -26,6 +41,7 @@ export function AppShell() {
   const outletContext: DefenseModeOutletContext = {
     defenseMode,
   }
+  const presenterEnabled = defenseMode || presenterMode
 
   useEffect(() => {
     window.localStorage.setItem(
@@ -35,6 +51,27 @@ export function AppShell() {
   }, [defenseMode])
 
   useEffect(() => {
+    window.localStorage.setItem(
+      'sdn-presenter-mode',
+      presenterMode ? 'enabled' : 'disabled',
+    )
+  }, [presenterMode])
+
+  useEffect(() => {
+    window.localStorage.setItem(
+      'sdn-presenter-rail-open',
+      presenterRailOpen ? 'enabled' : 'disabled',
+    )
+  }, [presenterRailOpen])
+
+  useEffect(() => {
+    window.localStorage.setItem(
+      'sdn-presenter-spotlight',
+      spotlightMode ? 'enabled' : 'disabled',
+    )
+  }, [spotlightMode])
+
+  useEffect(() => {
     mainShellRef.current?.scrollTo({
       top: 0,
       left: 0,
@@ -42,8 +79,84 @@ export function AppShell() {
     })
   }, [location.pathname])
 
+  useEffect(() => {
+    if (typeof window === 'undefined') {
+      return
+    }
+
+    const handlePresenterHotkey = (event: KeyboardEvent) => {
+      if (!event.altKey || event.key.toLowerCase() !== 'p') {
+        return
+      }
+
+      event.preventDefault()
+
+      if (defenseMode) {
+        setPresenterRailOpen((current) => !current)
+        return
+      }
+
+      setPresenterMode((current) => {
+        const nextValue = !current
+        setPresenterRailOpen(nextValue)
+        if (!nextValue) {
+          setSpotlightMode(false)
+        }
+
+        return nextValue
+      })
+    }
+
+    window.addEventListener('keydown', handlePresenterHotkey)
+
+    return () => {
+      window.removeEventListener('keydown', handlePresenterHotkey)
+    }
+  }, [defenseMode])
+
+  function handleTogglePresenterMode() {
+    setPresenterMode((current) => {
+      const nextValue = !current
+      setPresenterRailOpen(nextValue || defenseMode)
+      if (!nextValue && !defenseMode) {
+        setSpotlightMode(false)
+      }
+
+      return nextValue
+    })
+  }
+
+  function handleToggleDefenseMode() {
+    const nextValue = !defenseMode
+    setDefenseMode(nextValue)
+
+    if (nextValue) {
+      setPresenterRailOpen(true)
+      return
+    }
+
+    if (!presenterMode) {
+      setPresenterRailOpen(false)
+      setSpotlightMode(false)
+    }
+  }
+
+  function handleOpenPresenterRail() {
+    if (!presenterEnabled) {
+      setPresenterMode(true)
+    }
+
+    setPresenterRailOpen(true)
+  }
+
   return (
-    <div className={`app-shell${defenseMode ? ' app-shell--defense' : ''}`}>
+    <div
+      className={`app-shell${defenseMode ? ' app-shell--defense' : ''}${
+        presenterEnabled ? ' app-shell--presenter' : ''
+      }${presenterRailOpen ? ' app-shell--presenter-open' : ''}${
+        spotlightMode ? ' app-shell--presenter-spotlight' : ''
+      }`}
+    >
       <aside className="sidebar" aria-label="Primary navigation and environment details">
         <div className="brand-block">
           <div className="brand-mark">SDN</div>
@@ -99,22 +212,43 @@ export function AppShell() {
             </div>
             <div className="meta-card meta-card--defense">
               <span>Presentation</span>
-              <strong>{defenseMode ? 'Defense Mode' : 'Standard View'}</strong>
+              <strong>
+                {defenseMode
+                  ? 'Defense Mode'
+                  : presenterMode
+                    ? 'Presenter Mode'
+                    : 'Standard View'}
+              </strong>
               <div className="meta-card-actions">
-                <StatusBadge
-                  label={
-                    defenseMode ? 'Presenter Emphasis On' : 'Presenter Emphasis Off'
-                  }
-                  tone={defenseMode ? 'success' : 'neutral'}
-                />
-                <button
-                  className="button button--ghost"
-                  type="button"
-                  onClick={() => setDefenseMode((current) => !current)}
-                  aria-pressed={defenseMode}
-                >
-                  {defenseMode ? 'Disable Defense Mode' : 'Enable Defense Mode'}
-                </button>
+                <div className="chip-row">
+                  <StatusBadge
+                    label={defenseMode ? 'Defense Emphasis On' : 'Defense Emphasis Off'}
+                    tone={defenseMode ? 'success' : 'neutral'}
+                  />
+                  <StatusBadge
+                    label={presenterEnabled ? 'Presenter Rail Ready' : 'Presenter Rail Off'}
+                    tone={presenterEnabled ? 'success' : 'neutral'}
+                  />
+                </div>
+                <div className="form-actions">
+                  <button
+                    className="button button--ghost"
+                    type="button"
+                    onClick={handleToggleDefenseMode}
+                    aria-pressed={defenseMode}
+                  >
+                    {defenseMode ? 'Disable Defense Mode' : 'Enable Defense Mode'}
+                  </button>
+                  <button
+                    className="button button--ghost"
+                    type="button"
+                    onClick={handleTogglePresenterMode}
+                    aria-pressed={presenterMode}
+                  >
+                    {presenterMode ? 'Disable Presenter Mode' : 'Enable Presenter Mode'}
+                  </button>
+                </div>
+                <span className="cell-muted">Quick toggle: {presenterHotkeyLabel}</span>
               </div>
             </div>
           </div>
@@ -124,6 +258,37 @@ export function AppShell() {
           <Outlet context={outletContext} />
         </main>
       </div>
+
+      {presenterEnabled && presenterRailOpen ? (
+        <PresenterRail
+          defenseMode={defenseMode}
+          presenterMode={presenterMode}
+          spotlightMode={spotlightMode}
+          onTogglePresenterMode={handleTogglePresenterMode}
+          onToggleSpotlightMode={() => setSpotlightMode((current) => !current)}
+          onClose={() => setPresenterRailOpen(false)}
+        />
+      ) : (
+        <button
+          className={`presenter-launcher${
+            presenterEnabled ? ' presenter-launcher--collapsed' : ' presenter-launcher--idle'
+          }`}
+          type="button"
+          onClick={handleOpenPresenterRail}
+          aria-label={presenterEnabled ? 'Open presenter rail' : 'Enable presenter mode'}
+        >
+          <span className="presenter-launcher-icon" aria-hidden="true">
+            PR
+          </span>
+          <span className="presenter-launcher-copy">
+            <strong>Presenter Rail</strong>
+            <span>
+              {presenterEnabled ? 'Collapsed presenter surface' : 'Enable presenter mode'}
+            </span>
+          </span>
+          <span className="presenter-launcher-shortcut">{presenterHotkeyLabel}</span>
+        </button>
+      )}
     </div>
   )
 }
