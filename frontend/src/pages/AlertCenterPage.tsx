@@ -209,7 +209,11 @@ export function AlertCenterPage() {
       </section>
 
       {isLoading && !data ? (
-        <LoadingState label="Loading alert and fault signals..." />
+        <LoadingState
+          label="Loading alert and fault signals..."
+          hint="Collecting operator-facing health, policy, evidence, and drift alerts."
+          variant="list"
+        />
       ) : null}
 
       {data ? (
@@ -351,7 +355,8 @@ export function AlertCenterPage() {
               {recentPolicyEvents.length === 0 ? (
                 <EmptyState
                   title="No recent policy events"
-                  description="Policy event history is currently empty or unavailable."
+                  description="No recent policy activity is available to explain the current alert snapshot."
+                  eyebrow="Activity"
                 />
               ) : (
                 <ul className="entity-list" style={{ marginTop: 0 }}>
@@ -394,8 +399,9 @@ export function AlertCenterPage() {
           >
             {alerts.length === 0 ? (
               <EmptyState
-                title="No alerts generated"
-                description="Alert generation did not produce any current signals."
+                title="No active alerts"
+                description="No current alert signals require operator action in this snapshot."
+                eyebrow="Healthy state"
               />
             ) : (
               <ul className="entity-list" style={{ marginTop: 0 }}>

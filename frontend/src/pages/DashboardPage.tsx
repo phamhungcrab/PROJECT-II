@@ -1,6 +1,7 @@
 import { useEffect, useState } from 'react'
 import { Link } from 'react-router-dom'
 import { useDefenseMode } from '../app/defenseMode'
+import { EmptyState } from '../components/state/EmptyState'
 import { ErrorState } from '../components/state/ErrorState'
 import { LoadingState } from '../components/state/LoadingState'
 import { Panel } from '../components/ui/Panel'
@@ -683,10 +684,20 @@ export function DashboardPage() {
       </section>
 
       {isLoading && !data ? (
-        <LoadingState label="Loading controller health and topology summary..." />
+        <LoadingState
+          label="Loading controller health, topology, and inventory..."
+          hint="Preparing the main operator snapshot for this SDN management session."
+          variant="cards"
+        />
       ) : null}
 
-      {error && !data ? <ErrorState message={error} onRetry={reload} /> : null}
+      {error && !data ? (
+        <ErrorState
+          title="Controller snapshot unavailable"
+          message={error}
+          onRetry={reload}
+        />
+      ) : null}
 
       {data ? (
         <>
@@ -930,7 +941,11 @@ export function DashboardPage() {
               }
             >
               {policySummaryQuery.isLoading && !policySummaryQuery.data ? (
-                <LoadingState label="Loading policy compliance summary..." />
+              <LoadingState
+                label="Loading policy compliance summary..."
+                hint="Collecting desired, live, and compliance state for the current policy set."
+                variant="cards"
+              />
               ) : null}
 
               {policySummaryQuery.error && !policySummaryQuery.data ? (
@@ -997,7 +1012,11 @@ export function DashboardPage() {
               }
             >
               {policyDriftQuery.isLoading && !policyDriftQuery.data ? (
-                <LoadingState label="Loading drift watch..." />
+                <LoadingState
+                  label="Loading drift watch..."
+                  hint="Checking current policy alignment against live enforcement evidence."
+                  variant="list"
+                />
               ) : null}
 
               {policyDriftQuery.error && !policyDriftQuery.data ? (
@@ -1407,7 +1426,11 @@ export function DashboardPage() {
             description="Backend policy activity feed for recent verification, rollback, and enforcement actions."
           >
             {policyEventsQuery.isLoading && !policyEventsQuery.data ? (
-              <LoadingState label="Loading recent policy events..." />
+              <LoadingState
+                label="Loading recent policy events..."
+                hint="Reading recent apply, verify, rollback, and recovery actions."
+                variant="list"
+              />
             ) : null}
 
             {policyEventsQuery.error && !policyEventsQuery.data ? (
@@ -1424,7 +1447,11 @@ export function DashboardPage() {
                 ) : null}
 
                 {recentPolicyEvents.length === 0 ? (
-                  <p className="entity-list-meta">No backend policy events recorded yet.</p>
+                  <EmptyState
+                    title="No recent policy events"
+                    description="No backend policy activity has been recorded for the current snapshot yet."
+                    eyebrow="Activity"
+                  />
                 ) : (
                   <ul className="entity-list" style={{ marginTop: 0 }}>
                     {recentPolicyEvents.map((event) => (
@@ -2107,7 +2134,11 @@ export function DashboardPage() {
               }
             >
               {isOvsEvidenceLoading && !ovsEvidence ? (
-                <LoadingState label="Loading live enforcement evidence..." />
+                <LoadingState
+                  label="Loading live enforcement evidence..."
+                  hint="Reading current OVS flow evidence and operator-facing control alignment."
+                  variant="table"
+                />
               ) : null}
 
               {ovsEvidenceError && !ovsEvidence ? (

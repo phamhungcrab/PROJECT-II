@@ -558,7 +558,13 @@ export function MetricsCenterPage() {
         </div>
       </section>
 
-      {isLoading && !data ? <LoadingState label="Loading evaluation metrics..." /> : null}
+      {isLoading && !data ? (
+        <LoadingState
+          label="Loading evaluation metrics..."
+          hint="Preparing grounded policy, evidence, verification, and alert metrics."
+          variant="cards"
+        />
+      ) : null}
 
       {data ? (
         <>
@@ -1064,6 +1070,7 @@ export function MetricsCenterPage() {
                   <EmptyState
                     title="No recent control activity"
                     description="Policy Center has not recorded recent policy events for this snapshot."
+                    eyebrow="Activity"
                   />
                 </div>
               )}

@@ -274,7 +274,7 @@ function ModelFieldList({ fields }: { fields: ModelField[] }) {
   if (fields.length === 0) {
     return (
       <p className="entity-list-meta" style={{ marginTop: '12px' }}>
-        No projected fields are currently available for this section.
+        No projected model fields are available for this section in the current snapshot.
       </p>
     )
   }
@@ -933,10 +933,20 @@ export function ModelViewerPage() {
       </section>
 
       {isLoading && !data ? (
-        <LoadingState label="Loading read-only controller and device model snapshot..." />
+        <LoadingState
+          label="Loading read-only controller and device model snapshot..."
+          hint="Building the current YANG-lite projection from controller, topology, and inventory sources."
+          variant="workspace"
+        />
       ) : null}
 
-      {error && !data ? <ErrorState message={error} onRetry={reload} /> : null}
+      {error && !data ? (
+        <ErrorState
+          title="Model snapshot unavailable"
+          message={error}
+          onRetry={reload}
+        />
+      ) : null}
 
       {data ? (
         <>
@@ -1134,6 +1144,7 @@ export function ModelViewerPage() {
             <EmptyState
               title="No model snapshot for selected node"
               description="Choose a node currently visible in the inventory or topology-derived sources to inspect a read-only YANG-lite projection."
+              eyebrow="Model scope"
             />
           ) : null}
 

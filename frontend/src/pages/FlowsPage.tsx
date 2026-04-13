@@ -193,11 +193,19 @@ export function FlowsPage() {
       </Panel>
 
       {flowQuery.isLoading && !flowQuery.data ? (
-        <LoadingState label={`Loading flow tables for ${activeNodeId}...`} />
+        <LoadingState
+          label={`Loading flow tables for ${activeNodeId}...`}
+          hint="Reading controller-reported tables, flow entries, and counters for the selected node."
+          variant="table"
+        />
       ) : null}
 
       {flowQuery.error && !flowQuery.data ? (
-        <ErrorState message={flowQuery.error} onRetry={flowQuery.reload} />
+        <ErrorState
+          title="Flow table query failed"
+          message={flowQuery.error}
+          onRetry={flowQuery.reload}
+        />
       ) : null}
 
       <Panel
@@ -215,13 +223,19 @@ export function FlowsPage() {
         }
       >
         {ovsFlowQuery.isLoading && !ovsFlowQuery.data ? (
-          <LoadingState label="Loading OVS live flows..." />
+          <LoadingState
+            label="Loading OVS live flows..."
+            hint="Collecting the current switch-side flow dump from bridge s1."
+            variant="table"
+          />
         ) : null}
 
         {ovsFlowQuery.error && !ovsFlowQuery.data ? (
-          <div className="notice notice--warning">
-            Unable to load OVS live flows: {ovsFlowQuery.error}
-          </div>
+          <ErrorState
+            title="OVS live flows unavailable"
+            message={ovsFlowQuery.error}
+            onRetry={ovsFlowQuery.reload}
+          />
         ) : null}
 
         {ovsFlowQuery.data ? (
@@ -302,11 +316,13 @@ export function FlowsPage() {
               <EmptyState
                 title="No OVS flows returned"
                 description="The OVS dump did not return any flow entries."
+                eyebrow="Live evidence"
               />
             ) : filteredOvsFlows.length === 0 ? (
               <EmptyState
                 title="No matching OVS flows"
                 description="Try switching to All or clearing the search query."
+                eyebrow="Filter result"
               />
             ) : (
               <div className="table-shell">
@@ -404,6 +420,7 @@ export function FlowsPage() {
             <EmptyState
               title="No active tables returned"
               description="The backend returned zero tables with flow content for this node."
+              eyebrow="Controller view"
             />
           ) : null}
 
@@ -492,6 +509,7 @@ export function FlowsPage() {
                 <EmptyState
                   title="No flows in this table"
                   description="The backend returned the table without specific flow entries."
+                  eyebrow="Table detail"
                 />
               )}
             </Panel>

@@ -870,11 +870,19 @@ export function PolicyCenterPage() {
       </section>
 
       {policyQuery.isLoading && !policyQuery.data ? (
-        <LoadingState label="Loading policy inventory..." />
+        <LoadingState
+          label="Loading policy inventory..."
+          hint="Preparing policy objects, compliance state, and lifecycle controls."
+          variant="table"
+        />
       ) : null}
 
       {policyQuery.error && !policyQuery.data ? (
-        <ErrorState message={policyQuery.error} onRetry={policyQuery.reload} />
+        <ErrorState
+          title="Policy inventory unavailable"
+          message={policyQuery.error}
+          onRetry={policyQuery.reload}
+        />
       ) : null}
 
       {policyQuery.data ? (
@@ -987,6 +995,7 @@ export function PolicyCenterPage() {
                 <EmptyState
                   title="No matching policies"
                   description="Try switching to All or clearing the current search query."
+                  eyebrow="Filter result"
                 />
               </div>
             ) : (
@@ -1172,13 +1181,18 @@ export function PolicyCenterPage() {
               description="Selected policy metadata, previewed enforcement mapping, and operator context."
             >
               {isDetailLoading && !selectedPolicy ? (
-                <LoadingState label="Loading policy detail workspace..." />
+                <LoadingState
+                  label="Loading policy detail workspace..."
+                  hint="Collecting selected policy metadata, preview, and operator context."
+                  variant="workspace"
+                />
               ) : null}
 
               {!selectedPolicyId ? (
                 <EmptyState
                   title="No policy selected"
                   description="Select a policy row to inspect preview, evidence, and verification state."
+                  eyebrow="Selection"
                 />
               ) : null}
 
@@ -1369,13 +1383,18 @@ export function PolicyCenterPage() {
               description="Compact live evidence, verification history, and recent policy activity for the selected object."
             >
               {isDetailLoading && !latestEvidence && selectedPolicyId ? (
-                <LoadingState label="Loading evidence and verification history..." />
+                <LoadingState
+                  label="Loading evidence and verification history..."
+                  hint="Reading live OVS evidence, verification history, and recent policy activity."
+                  variant="list"
+                />
               ) : null}
 
               {!selectedPolicyId ? (
                 <EmptyState
                   title="No evidence selected"
                   description="Choose a policy to review live OVS evidence and verification history."
+                  eyebrow="Evidence"
                 />
               ) : null}
 
