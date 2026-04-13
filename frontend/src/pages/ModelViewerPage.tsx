@@ -19,36 +19,87 @@ import {
   formatValue,
 } from '../utils/formatters'
 
+type StatusTone = 'neutral' | 'success' | 'warning' | 'danger'
+
 interface ModelViewerData {
-  health: Awaited<ReturnType<typeof sdnApi.getHealth>>
-  inventory: Awaited<ReturnType<typeof sdnApi.getInventoryNodes>>
-  topology: Awaited<ReturnType<typeof sdnApi.getTopologySummary>>
-  raw: Awaited<ReturnType<typeof sdnApi.getTopologyRaw>>
+  health: Awaited<ReturnType<typeof sdnApi.getHealth>> | null
+  healthError: string | null
+  inventory: Awaited<ReturnType<typeof sdnApi.getInventoryNodes>> | null
+  inventoryError: string | null
+  topology: Awaited<ReturnType<typeof sdnApi.getTopologySummary>> | null
+  topologyError: string | null
+  raw: Awaited<ReturnType<typeof sdnApi.getTopologyRaw>> | null
+  rawError: string | null
   refreshedAt: string
 }
 
-function getFreshnessStatus(timestamp: string | null | undefined) {
+interface ModelField {
+  label: string
+  value: string
+  detail: string
+  mono?: boolean
+  tags?: string[]
+}
+
+interface ModelGroup {
+  id: string
+  title: string
+  summary: string
+  openByDefault?: boolean
+  fields: ModelField[]
+}
+
+interface DifferenceHint {
+  label: string
+  tone: StatusTone
+  summary: string
+}
+
+function loadSource<T>(loader: () => Promise<T>) {
+  return loader()
+    .then((data) => ({
+      data,
+      error: null,
+    }))
+    .catch((error: unknown) => ({
+      data: null,
+      error: error instanceof Error ? error.message : 'Unexpected data source failure.',
+    }))
+}
+
+function getFreshnessStatus(
+  timestamp: string | null | undefined,
+  checkedAt: string,
+) {
   if (!timestamp) {
     return {
       label: 'Partial snapshot',
       tone: 'warning' as const,
+      detail:
+        'Freshness is based on the current page capture because no node-level snapshot timestamp is available.',
     }
   }
 
   const parsedTimestamp = new Date(timestamp)
   if (Number.isNaN(parsedTimestamp.getTime())) {
     return {
-      label: 'Snapshot captured',
+      label: 'Partial snapshot',
       tone: 'warning' as const,
+      detail: 'The snapshot timestamp is present but could not be parsed reliably.',
     }
   }
 
-  const ageInMinutes = (Date.now() - parsedTimestamp.getTime()) / 60_000
+  const checkedDate = new Date(checkedAt)
+  const referenceTime = Number.isNaN(checkedDate.getTime())
+    ? Date.now()
+    : checkedDate.getTime()
+  const ageInMinutes = (referenceTime - parsedTimestamp.getTime()) / 60_000
 
   if (ageInMinutes <= 5) {
     return {
       label: 'Fresh',
       tone: 'success' as const,
+      detail: 'The selected node snapshot is recent enough for a defense-friendly operational readout.',
     }
   }
 
@@ -56,116 +107,310 @@ function getFreshnessStatus(timestamp: string | null | undefined) {
     return {
       label: 'Recent',
       tone: 'warning' as const,
+      detail: 'The model projection is recent, but not near-real-time.',
     }
   }
 
   return {
-    label: 'Stale snapshot',
+    label: 'Stale',
     tone: 'danger' as const,
+    detail: 'The selected node snapshot is old enough that counters or visibility may no longer reflect the live device state.',
   }
 }
 
-function getAvailabilityStatus(
+function getModelScope(nodeId: string | null) {
+  if (!nodeId) {
+    return 'Read-only controller/device state projection'
+  }
+
+  if (nodeId.startsWith('openflow:')) {
+    return 'Read-only YANG-lite switch projection'
+  }
+
+  if (nodeId.startsWith('host:')) {
+    return 'Read-only host attachment projection'
+  }
+
+  return 'Read-only controller/device state projection'
+}
+
+function getSourceTypeLabel(nodeId: string | null) {
+  if (!nodeId) {
+    return 'Controller-linked node projection'
+  }
+
+  if (nodeId.startsWith('openflow:')) {
+    return 'OpenFlow switch projection'
+  }
+
+  if (nodeId.startsWith('host:')) {
+    return 'Host attachment projection'
+  }
+
+  return 'Controller-linked node projection'
+}
+
+function getModelConfidenceStatus(
   hasInventoryView: boolean,
   hasTopologyView: boolean,
+  hasRawView: boolean,
 ) {
-  if (hasInventoryView && hasTopologyView) {
+  if (hasInventoryView && hasTopologyView && hasRawView) {
     return {
-      label: 'Inventory + topology',
+      label: 'Partial model snapshot',
       tone: 'success' as const,
+      detail:
+        'Inventory, topology, and raw controller linkage are all present, but this remains a read-only YANG-lite projection rather than a full NETCONF datastore view.',
     }
   }
 
-  if (hasInventoryView || hasTopologyView) {
+  if (hasInventoryView && (hasTopologyView || hasRawView)) {
     return {
-      label: 'Partial snapshot',
+      label: 'Partial model snapshot',
       tone: 'warning' as const,
+      detail:
+        'Config-like and operational-like fields are both visible, but the snapshot remains intentionally partial and controller-derived.',
+    }
+  }
+
+  if (hasInventoryView) {
+    return {
+      label: 'Config-light snapshot',
+      tone: 'warning' as const,
+      detail:
+        'Inventory identity is available, but topology or raw lineage is limited for the selected node.',
+    }
+  }
+
+  if (hasTopologyView || hasRawView) {
+    return {
+      label: 'Observational only',
+      tone: 'warning' as const,
+      detail:
+        'Operational presence is visible, but inventory-backed config-like projection is limited or absent.',
     }
   }
 
   return {
     label: 'Unavailable',
     tone: 'danger' as const,
+    detail: 'No structured controller/device projection is currently available for this selection.',
   }
 }
 
-function getModelScope(nodeId: string | null) {
-  if (!nodeId) {
-    return 'Read-only controller/device state view'
+function getNodeOptionLabel(nodeId: string) {
+  return `${classifyNode(nodeId)} · ${nodeId}`
+}
+
+function getStatusValue(value: boolean) {
+  return value ? 'Observed' : 'Unavailable'
+}
+
+function getDifferenceHints(params: {
+  hasInventoryView: boolean
+  hasTopologyView: boolean
+  hasRawView: boolean
+  hasNamedConfig: boolean
+  hasCounters: boolean
+  hasInventoryReference: boolean
+  hasSnapshotTimestamp: boolean
+}) {
+  const hints: DifferenceHint[] = []
+
+  if (params.hasInventoryView && (params.hasTopologyView || params.hasRawView)) {
+    hints.push({
+      label: 'Aligned',
+      tone: 'success',
+      summary:
+        'Config-like identity and operational visibility are both present for the selected node, so the YANG-lite projection is structurally consistent.',
+    })
+  } else if (params.hasInventoryView) {
+    hints.push({
+      label: 'Config-light snapshot',
+      tone: 'warning',
+      summary:
+        'Inventory identity is present, but topology-side or raw controller visibility is limited for the current selection.',
+    })
+  } else if (params.hasTopologyView || params.hasRawView) {
+    hints.push({
+      label: 'Observational only',
+      tone: 'warning',
+      summary:
+        'The selected node is visible operationally, but the config-like inventory projection is thin or absent.',
+    })
   }
 
-  if (nodeId.startsWith('openflow:')) {
-    return 'Read-only YANG-lite switch state'
+  if (params.hasCounters && !params.hasNamedConfig) {
+    hints.push({
+      label: 'Observational only',
+      tone: 'warning',
+      summary:
+        'Operational counters are visible even though the config-like metadata is still light, which is typical for a controller/device state projection.',
+    })
   }
 
-  if (nodeId.startsWith('host:')) {
-    return 'Read-only host attachment state'
+  if (params.hasInventoryReference && !params.hasSnapshotTimestamp) {
+    hints.push({
+      label: 'Partial',
+      tone: 'warning',
+      summary:
+        'Inventory linkage exists, but the node-level freshness signal falls back to the page capture rather than a device snapshot timestamp.',
+    })
   }
 
-  return 'Read-only controller/device state view'
+  if (hints.length === 0) {
+    hints.push({
+      label: 'Partial',
+      tone: 'warning',
+      summary:
+        'The selected node is only partially represented, so this page remains a safe read-only model projection rather than a complete model datastore view.',
+    })
+  }
+
+  return hints.slice(0, 4)
+}
+
+function ModelFieldList({ fields }: { fields: ModelField[] }) {
+  if (fields.length === 0) {
+    return (
+      <p className="entity-list-meta" style={{ marginTop: '12px' }}>
+        No projected fields are currently available for this section.
+      </p>
+    )
+  }
+
+  return (
+    <div className="model-field-list">
+      {fields.map((field) => (
+        <div key={field.label} className="model-field-row">
+          <div>
+            <span className="model-field-key">{field.label}</span>
+            <p className="model-field-detail">{field.detail}</p>
+            {field.tags && field.tags.length > 0 ? (
+              <div className="chip-row" style={{ marginTop: '8px' }}>
+                {field.tags.map((tag) => (
+                  <span key={`${field.label}-${tag}`} className="chip">
+                    {tag}
+                  </span>
+                ))}
+              </div>
+            ) : null}
+          </div>
+          <strong className={`model-field-value${field.mono ? ' mono' : ''}`}>
+            {field.value}
+          </strong>
+        </div>
+      ))}
+    </div>
+  )
+}
+
+function ModelGroupDetails({ group }: { group: ModelGroup }) {
+  return (
+    <details className="model-section-details" open={group.openByDefault}>
+      <summary className="model-section-summary">
+        <div>
+          <strong className="model-section-title">{group.title}</strong>
+          <p className="model-section-copy">{group.summary}</p>
+        </div>
+      </summary>
+      <div className="model-section-body">
+        <ModelFieldList fields={group.fields} />
+      </div>
+    </details>
+  )
 }
 
 export function ModelViewerPage() {
   const { defenseMode } = useDefenseMode()
-  const [nodeIdInput, setNodeIdInput] = useState('')
   const [selectedNodeId, setSelectedNodeId] = useState('')
 
   const { data, error, isLoading, reload } = useApiResource<ModelViewerData>(
     async () => {
       const [health, inventory, topology, raw] = await Promise.all([
-        sdnApi.getHealth(),
-        sdnApi.getInventoryNodes(),
-        sdnApi.getTopologySummary(),
-        sdnApi.getTopologyRaw(),
+        loadSource(() => sdnApi.getHealth()),
+        loadSource(() => sdnApi.getInventoryNodes()),
+        loadSource(() => sdnApi.getTopologySummary()),
+        loadSource(() => sdnApi.getTopologyRaw()),
       ])
 
+      if (!health.data && !inventory.data && !topology.data && !raw.data) {
+        throw new Error(
+          [
+            health.error,
+            inventory.error,
+            topology.error,
+            raw.error,
+          ]
+            .filter((message): message is string => Boolean(message))
+            .join(' | ') || 'Unable to load read-only model snapshot sources.',
+        )
+      }
+
       return {
-        health,
-        inventory,
-        topology,
-        raw,
+        health: health.data,
+        healthError: health.error,
+        inventory: inventory.data,
+        inventoryError: inventory.error,
+        topology: topology.data,
+        topologyError: topology.error,
+        raw: raw.data,
+        rawError: raw.error,
         refreshedAt: new Date().toISOString(),
       }
     },
     [],
   )
 
+  const rawTopology = data?.raw?.['network-topology:topology']?.[0] ?? null
   const selectableNodeIds = useMemo(() => {
-    if (!data) {
-      return []
-    }
+    const inventoryNodeIds = data?.inventory?.nodes.map((node) => node.node_id) ?? []
+    const topologyNodeIds = data?.topology?.nodes.map((node) => node.node_id) ?? []
+    const rawNodeIds = rawTopology?.node?.map((node) => node['node-id']) ?? []
 
     return Array.from(
-      new Set([
-        ...data.inventory.nodes.map((node) => node.node_id),
-        ...data.topology.nodes.map((node) => node.node_id),
-      ]),
-    )
-  }, [data])
+      new Set([...inventoryNodeIds, ...topologyNodeIds, ...rawNodeIds]),
+    ).sort((left, right) => {
+      if (left === appConfig.defaultFlowNodeId) {
+        return -1
+      }
+
+      if (right === appConfig.defaultFlowNodeId) {
+        return 1
+      }
+
+      const leftType = classifyNode(left)
+      const rightType = classifyNode(right)
+      if (leftType !== rightType) {
+        return leftType.localeCompare(rightType)
+      }
+
+      return left.localeCompare(right)
+    })
+  }, [data?.inventory?.nodes, data?.topology?.nodes, rawTopology?.node])
 
   const defaultNodeId =
     selectableNodeIds.find((nodeId) => nodeId === appConfig.defaultFlowNodeId) ??
     selectableNodeIds[0] ??
     ''
+  const firstHostNodeId =
+    selectableNodeIds.find((nodeId) => nodeId.startsWith('host:')) ?? ''
   const effectiveSelectedNodeId = selectedNodeId || defaultNodeId
 
-  const rawTopology = data?.raw['network-topology:topology']?.[0] ?? null
   const rawNodeMap = useMemo(
     () =>
-      new Map(
-        (rawTopology?.node ?? []).map((node) => [node['node-id'], node]),
-      ),
+      new Map((rawTopology?.node ?? []).map((node) => [node['node-id'], node])),
     [rawTopology],
   )
   const topologyNodeMap = useMemo(
     () =>
-      new Map(data?.topology.nodes.map((node) => [node.node_id, node]) ?? []),
-    [data?.topology.nodes],
+      new Map(data?.topology?.nodes.map((node) => [node.node_id, node]) ?? []),
+    [data?.topology?.nodes],
   )
   const inventoryNodeMap = useMemo(
     () =>
-      new Map(data?.inventory.nodes.map((node) => [node.node_id, node]) ?? []),
-    [data?.inventory.nodes],
+      new Map(data?.inventory?.nodes.map((node) => [node.node_id, node]) ?? []),
+    [data?.inventory?.nodes],
   )
 
   const selectedInventoryNode = inventoryNodeMap.get(effectiveSelectedNodeId) ?? null
@@ -174,6 +419,7 @@ export function ModelViewerPage() {
   const selectedNodeType = effectiveSelectedNodeId
     ? classifyNode(effectiveSelectedNodeId)
     : 'Node'
+  const sourceTypeLabel = getSourceTypeLabel(effectiveSelectedNodeId || null)
   const attachmentPoints =
     selectedRawNode?.['host-tracker-service:attachment-points'] ?? []
   const addresses = selectedRawNode?.['host-tracker-service:addresses'] ?? []
@@ -186,12 +432,37 @@ export function ModelViewerPage() {
     selectedInventoryNode?.snapshot?.end?.end ??
     selectedInventoryNode?.snapshot?.start?.begin ??
     null
-  const freshnessStatus = getFreshnessStatus(snapshotTimestamp)
-  const availabilityStatus = getAvailabilityStatus(
-    Boolean(selectedInventoryNode),
-    Boolean(selectedTopologyNode || selectedRawNode),
+  const freshnessStatus = getFreshnessStatus(snapshotTimestamp, data?.refreshedAt ?? '')
+  const hasInventoryView = Boolean(selectedInventoryNode)
+  const hasTopologyView = Boolean(selectedTopologyNode)
+  const hasRawView = Boolean(selectedRawNode)
+  const modelConfidenceStatus = getModelConfidenceStatus(
+    hasInventoryView,
+    hasTopologyView,
+    hasRawView,
   )
-  const connectorPacketText = selectedInventoryNode?.connectors
+  const sourceLineage = [
+    data?.health ? 'Controller-derived' : null,
+    hasInventoryView ? 'Inventory-derived' : null,
+    hasTopologyView ? 'Topology-derived' : null,
+    hasRawView ? 'Raw topology-derived' : null,
+  ].filter((value, index, values): value is string => Boolean(value) && values.indexOf(value) === index)
+  const hasNamedConfig = Boolean(
+    selectedInventoryNode?.description ||
+      selectedInventoryNode?.manufacturer ||
+      selectedInventoryNode?.software ||
+      selectedInventoryNode?.serial_number ||
+      selectedInventoryNode?.ip_address,
+  )
+  const connectors = selectedInventoryNode?.connectors ?? []
+  const hasCounters = connectors.some(
+    (connector) =>
+      connector.statistics?.packets?.received ||
+      connector.statistics?.packets?.transmitted ||
+      connector.statistics?.bytes?.received ||
+      connector.statistics?.bytes?.transmitted,
+  )
+  const connectorPacketText = connectors
     .map((connector) =>
       formatPacketPair(
         connector.statistics?.packets?.received,
@@ -199,7 +470,7 @@ export function ModelViewerPage() {
       ),
     )
     .join(' · ')
-  const connectorByteText = selectedInventoryNode?.connectors
+  const connectorByteText = connectors
     .map((connector) =>
       formatBytePair(
         connector.statistics?.bytes?.received,
@@ -207,18 +478,441 @@ export function ModelViewerPage() {
       ),
     )
     .join(' · ')
+  const differenceHints = getDifferenceHints({
+    hasInventoryView,
+    hasTopologyView,
+    hasRawView,
+    hasNamedConfig,
+    hasCounters,
+    hasInventoryReference: Boolean(inventoryReference),
+    hasSnapshotTimestamp: Boolean(snapshotTimestamp),
+  })
 
-  const handleNodeSubmit = (event: React.FormEvent<HTMLFormElement>) => {
-    event.preventDefault()
+  const configViewGroups: ModelGroup[] = [
+    {
+      id: 'system-identity',
+      title: 'System Identity',
+      summary:
+        'Config-like identity and naming fields projected from the current inventory and topology linkage.',
+      openByDefault: true,
+      fields: [
+        {
+          label: 'Node ID',
+          value: effectiveSelectedNodeId || 'No node selected',
+          detail: 'Primary device identity used by the current controller snapshot.',
+          mono: true,
+          tags: ['Projected identity'],
+        },
+        {
+          label: 'Node Type',
+          value: selectedNodeType,
+          detail: 'Derived from the controller-facing node identifier format.',
+          tags: ['Classifier'],
+        },
+        {
+          label: 'Description',
+          value: formatValue(selectedInventoryNode?.description),
+          detail: 'Inventory-derived descriptive field used as a config-like identity hint.',
+          tags: ['Inventory-derived'],
+        },
+        {
+          label: 'Manufacturer',
+          value: formatValue(selectedInventoryNode?.manufacturer),
+          detail: 'Inventory-derived vendor identity. This is a projection, not a NETCONF capability inventory.',
+          tags: ['Inventory-derived'],
+        },
+        {
+          label: 'Software',
+          value: formatValue(selectedInventoryNode?.software),
+          detail: 'Controller-visible software string from the current inventory view.',
+          tags: ['Inventory-derived'],
+        },
+        {
+          label: 'Management IP',
+          value: formatValue(selectedInventoryNode?.ip_address),
+          detail: 'Management-facing address when the inventory snapshot provides one.',
+          tags: ['Config-like'],
+        },
+      ],
+    },
+    {
+      id: 'bridge-role',
+      title: 'Bridge Role / Intended Structure',
+      summary:
+        'Safe structure hints that describe how the selected node is represented rather than claiming a full config datastore.',
+      fields: [
+        {
+          label: 'Projected Role',
+          value:
+            selectedNodeType === 'Switch'
+              ? 'Bridge / switch structure'
+              : selectedNodeType === 'Host'
+                ? 'Host attachment structure'
+                : 'Controller-linked structure',
+          detail: 'Role is inferred from the selected node identity and currently visible inventory/topology data.',
+          tags: ['YANG-lite'],
+        },
+        {
+          label: 'Connector Count',
+          value: formatNumber(selectedInventoryNode?.connector_count ?? 0),
+          detail: 'Used here as an intended structure hint rather than a strict configuration statement.',
+          tags: ['Config-light snapshot'],
+        },
+        {
+          label: 'Inventory Reference',
+          value: formatValue(inventoryReference),
+          detail: 'Controller linkage between topology and inventory representations.',
+          mono: true,
+          tags: ['Evidence / linkage'],
+        },
+        {
+          label: 'Serial Number',
+          value: formatValue(selectedInventoryNode?.serial_number),
+          detail: 'Hardware identity field when exposed by the current inventory snapshot.',
+          tags: ['Inventory-derived'],
+        },
+      ],
+    },
+  ]
 
-    const nextNodeId = nodeIdInput.trim() || defaultNodeId
-    if (!nextNodeId) {
-      return
-    }
+  const operationalViewGroups: ModelGroup[] = [
+    {
+      id: 'live-status',
+      title: 'Live Status / Exposure',
+      summary:
+        'Operational-like state projected from controller health, topology visibility, and inventory counters.',
+      openByDefault: true,
+      fields: [
+        {
+          label: 'Controller Status',
+          value: data?.health?.status ? formatValue(data.health.status) : 'Unavailable',
+          detail: 'Controller reachability for the current model snapshot request.',
+          tags: ['Controller-derived'],
+        },
+        {
+          label: 'Topology Presence',
+          value: getStatusValue(hasTopologyView || hasRawView),
+          detail: 'Whether the selected node is visible in topology-oriented sources.',
+          tags: ['Topology-derived'],
+        },
+        {
+          label: 'Flow Exposure',
+          value: formatNumber(selectedInventoryNode?.flow_count ?? 0),
+          detail: 'Number of controller-exposed flows for the selected inventory node.',
+          tags: ['Operational-like'],
+        },
+        {
+          label: 'Table Exposure',
+          value: formatNumber(selectedInventoryNode?.table_count ?? 0),
+          detail: 'Visible OpenFlow table count for the selected inventory node.',
+          tags: ['Operational-like'],
+        },
+        {
+          label: 'Attachment Points',
+          value: formatNumber(attachmentPoints.length),
+          detail: 'Observed attachment points from raw topology linkage.',
+          tags: ['Observational'],
+        },
+        {
+          label: 'Known Addresses',
+          value: formatNumber(addresses.length),
+          detail: 'Observed address count for host-oriented raw topology entries.',
+          tags: ['Observational'],
+        },
+      ],
+    },
+    {
+      id: 'freshness-counters',
+      title: 'Freshness / Counters',
+      summary:
+        'Operational counters and freshness signals stay read-only and are presented as observational state rather than writable configuration.',
+      fields: [
+        {
+          label: 'Snapshot Time',
+          value: formatDateTime(snapshotTimestamp),
+          detail: freshnessStatus.detail,
+          tags: [freshnessStatus.label],
+        },
+        {
+          label: 'Packet Counters',
+          value: connectorPacketText || 'Unavailable',
+          detail: 'Aggregated packet counters projected from connector statistics when present.',
+          tags: ['Operational counters'],
+        },
+        {
+          label: 'Byte Counters',
+          value: connectorByteText || 'Unavailable',
+          detail: 'Aggregated byte counters projected from connector statistics when present.',
+          tags: ['Operational counters'],
+        },
+        {
+          label: 'Termination Points',
+          value: formatNumber(
+            selectedTopologyNode?.termination_point_count ?? terminationPoints.length,
+          ),
+          detail: 'Observed topology-facing termination point count for the current selection.',
+          tags: ['Topology-derived'],
+        },
+      ],
+    },
+  ]
 
-    setSelectedNodeId(nextNodeId)
-    setNodeIdInput(nextNodeId)
-  }
+  const explorerGroups: ModelGroup[] = [
+    {
+      id: 'system',
+      title: 'system',
+      summary:
+        'Identity-oriented fields, source scope, and read-only safety context for the selected node projection.',
+      openByDefault: true,
+      fields: [
+        {
+          label: 'Model Scope',
+          value: getModelScope(effectiveSelectedNodeId || null),
+          detail: 'This page projects structured state without exposing configuration write operations.',
+          tags: ['Read-only'],
+        },
+        {
+          label: 'Source Type',
+          value: sourceTypeLabel,
+          detail: 'Derived from the selected node identity and the current controller-facing data sources.',
+          tags: ['Controller/device state projection'],
+        },
+        {
+          label: 'Model Confidence',
+          value: modelConfidenceStatus.label,
+          detail: modelConfidenceStatus.detail,
+          tags: ['Honest completeness'],
+        },
+        {
+          label: 'Source Lineage',
+          value: sourceLineage.join(' / ') || 'Unavailable',
+          detail: 'Lineage stays explicit so the operator can explain where this YANG-lite snapshot comes from.',
+          tags: sourceLineage,
+        },
+      ],
+    },
+    {
+      id: 'bridge-state',
+      title: 'bridge / switch state',
+      summary:
+        'Controller-visible bridge or switch exposure, structure, and snapshot success indicators.',
+      fields: [
+        {
+          label: 'Observed Installed Flows',
+          value: formatNumber(selectedInventoryNode?.flow_count ?? 0),
+          detail: 'Live flow exposure returned by the inventory snapshot.',
+          tags: ['Operational-like'],
+        },
+        {
+          label: 'Exposed Flow Tables',
+          value: formatNumber(selectedInventoryNode?.table_count ?? 0),
+          detail: 'OpenFlow table count from the current inventory response.',
+          tags: ['Operational-like'],
+        },
+        {
+          label: 'Connectors',
+          value: formatNumber(selectedInventoryNode?.connector_count ?? 0),
+          detail: 'Bridge or switch connector count projected from inventory.',
+          tags: ['Inventory-derived'],
+        },
+        {
+          label: 'Snapshot Succeeded',
+          value: formatValue(selectedInventoryNode?.snapshot?.end?.succeeded),
+          detail: 'Indicates whether the current inventory snapshot completed successfully.',
+          tags: ['Controller-derived'],
+        },
+      ],
+    },
+    {
+      id: 'interfaces',
+      title: 'interfaces',
+      summary:
+        'Compact interface-oriented view that groups connector identity, state, and light configuration hints.',
+      fields: connectors.slice(0, 8).map((connector) => ({
+        label: connector.connector_id,
+        value: connector.name ?? 'Unnamed interface',
+        detail: `State ${formatConnectorState(connector.state)} · Port ${formatValue(
+          connector.port_number,
+        )}`,
+        mono: true,
+        tags: [
+          connector.state?.live ? 'Operational' : 'Idle or partial',
+          connector.configuration ? 'Config-like' : 'Operational-only',
+        ],
+      })),
+    },
+    {
+      id: 'ports-connectors',
+      title: 'ports / connectors',
+      summary:
+        'Port-oriented view for hardware address, numbering, and connector counter exposure.',
+      fields: connectors.slice(0, 8).map((connector) => ({
+        label: `Port ${formatValue(connector.port_number)}`,
+        value: connector.hardware_address ?? 'No MAC',
+        detail: `${formatPacketPair(
+          connector.statistics?.packets?.received,
+          connector.statistics?.packets?.transmitted,
+        )} · ${formatBytePair(
+          connector.statistics?.bytes?.received,
+          connector.statistics?.bytes?.transmitted,
+        )}`,
+        mono: true,
+        tags: ['Counters', connector.configuration ?? 'No config label'],
+      })),
+    },
+    {
+      id: 'control-plane-visibility',
+      title: 'control-plane visibility',
+      summary:
+        'Presence and linkage across controller health, topology, raw topology, and inventory sources.',
+      fields: [
+        {
+          label: 'Controller Type',
+          value: data?.health?.controller.type ?? 'Unavailable',
+          detail: 'Controller source used for this read-only projection.',
+          tags: ['Controller-derived'],
+        },
+        {
+          label: 'Topology Visibility',
+          value: hasTopologyView ? 'Observed' : 'Not observed',
+          detail: 'Whether the selected node appears in the summary topology view.',
+          tags: ['Topology-derived'],
+        },
+        {
+          label: 'Raw Topology Visibility',
+          value: hasRawView ? 'Observed' : 'Not observed',
+          detail: 'Whether the selected node appears in the raw topology projection.',
+          tags: ['Raw topology-derived'],
+        },
+        {
+          label: 'Inventory Visibility',
+          value: hasInventoryView ? 'Observed' : 'Not observed',
+          detail: 'Whether the selected node appears in the controller inventory snapshot.',
+          tags: ['Inventory-derived'],
+        },
+      ],
+    },
+    {
+      id: 'evidence-linkage',
+      title: 'evidence / inventory linkage',
+      summary:
+        'Cross-links between inventory references, topology references, and snapshot timing for the current model projection.',
+      fields: [
+        {
+          label: 'Inventory Reference',
+          value: formatValue(inventoryReference),
+          detail: 'Shared controller-side linkage between topology and inventory views.',
+          mono: true,
+          tags: ['Linkage'],
+        },
+        {
+          label: 'Topology ID',
+          value: data?.topology?.topology_id ?? 'Unavailable',
+          detail: 'Current topology context used for this YANG-lite view.',
+          tags: ['Topology-derived'],
+        },
+        {
+          label: 'Page Capture',
+          value: formatDateTime(data?.refreshedAt),
+          detail: 'Time when this client-side model snapshot was assembled.',
+          tags: ['Read-only capture'],
+        },
+        {
+          label: 'Difference Hint',
+          value: differenceHints[0]?.label ?? 'Partial',
+          detail:
+            differenceHints[0]?.summary ??
+            'This node is represented as a partial read-only controller/device projection.',
+          tags: ['Config vs operational'],
+        },
+      ],
+    },
+  ]
+
+  const rawSnapshotJson = useMemo(
+    () =>
+      JSON.stringify(
+        {
+          selected_node: {
+            id: effectiveSelectedNodeId || null,
+            type: selectedNodeType,
+            source_type: sourceTypeLabel,
+            read_only_mode: true,
+            model_scope: getModelScope(effectiveSelectedNodeId || null),
+          },
+          source_context: {
+            page_capture: data?.refreshedAt ?? null,
+            snapshot_timestamp: snapshotTimestamp,
+            freshness: freshnessStatus.label,
+            freshness_detail: freshnessStatus.detail,
+            source_lineage: sourceLineage,
+            model_confidence: modelConfidenceStatus.label,
+          },
+          config_view: {
+            description: selectedInventoryNode?.description ?? null,
+            manufacturer: selectedInventoryNode?.manufacturer ?? null,
+            hardware: selectedInventoryNode?.hardware ?? null,
+            software: selectedInventoryNode?.software ?? null,
+            serial_number: selectedInventoryNode?.serial_number ?? null,
+            management_ip: selectedInventoryNode?.ip_address ?? null,
+            connector_count: selectedInventoryNode?.connector_count ?? null,
+            inventory_reference: inventoryReference,
+          },
+          operational_view: {
+            controller_status: data?.health?.status ?? null,
+            topology_visible: hasTopologyView,
+            raw_topology_visible: hasRawView,
+            inventory_visible: hasInventoryView,
+            flow_count: selectedInventoryNode?.flow_count ?? null,
+            table_count: selectedInventoryNode?.table_count ?? null,
+            termination_point_count:
+              selectedTopologyNode?.termination_point_count ?? terminationPoints.length,
+            attachment_point_count: attachmentPoints.length,
+            address_count: addresses.length,
+          },
+          difference_hints: differenceHints,
+        },
+        null,
+        2,
+      ),
+    [
+      addresses.length,
+      attachmentPoints.length,
+      data?.health?.status,
+      data?.refreshedAt,
+      differenceHints,
+      effectiveSelectedNodeId,
+      freshnessStatus.detail,
+      freshnessStatus.label,
+      hasInventoryView,
+      hasRawView,
+      hasTopologyView,
+      inventoryReference,
+      modelConfidenceStatus.label,
+      selectedInventoryNode?.connector_count,
+      selectedInventoryNode?.description,
+      selectedInventoryNode?.flow_count,
+      selectedInventoryNode?.hardware,
+      selectedInventoryNode?.ip_address,
+      selectedInventoryNode?.manufacturer,
+      selectedInventoryNode?.serial_number,
+      selectedInventoryNode?.software,
+      selectedInventoryNode?.table_count,
+      selectedNodeType,
+      selectedTopologyNode?.termination_point_count,
+      snapshotTimestamp,
+      sourceLineage,
+      sourceTypeLabel,
+      terminationPoints.length,
+    ],
+  )
+
+  const sourceErrors = [
+    data?.healthError,
+    data?.inventoryError,
+    data?.topologyError,
+    data?.rawError,
+  ].filter((value): value is string => Boolean(value))
 
   return (
     <div className="page">
@@ -226,9 +920,10 @@ export function ModelViewerPage() {
         <div>
           <h2 className="section-title">NETCONF / YANG-lite Viewer</h2>
           <p className="section-copy">
-            Read-only model snapshot built from current OpenDaylight inventory and
-            topology data. This is a safe, partial controller/device state view,
-            not full multi-vendor NETCONF coverage.
+            Read-only model-driven view built from current controller inventory,
+            topology, and raw topology linkage. This page stays honest: it presents a
+            partial YANG-lite projection rather than full NETCONF or writable
+            datastore support.
           </p>
         </div>
 
@@ -251,13 +946,13 @@ export function ModelViewerPage() {
             </div>
           ) : null}
 
+          {sourceErrors.length > 0 ? (
+            <div className="notice notice--warning">
+              Model Viewer is using partial source data: {sourceErrors.join(' | ')}
+            </div>
+          ) : null}
+
           <div className="stats-grid">
-            <StatCard
-              label="Source Type"
-              value={data.health.controller.type}
-              helper="Inventory + topology read-only snapshot"
-              tone="accent"
-            />
             <StatCard
               label="Selected Node"
               value={
@@ -265,128 +960,171 @@ export function ModelViewerPage() {
                   {effectiveSelectedNodeId || 'No node selected'}
                 </span>
               }
-              helper={getModelScope(effectiveSelectedNodeId || null)}
+              helper="Current node or device projection in focus"
+              tone="accent"
+            />
+            <StatCard
+              label="Source Type"
+              value={sourceTypeLabel}
+              helper="Controller or device state projection type"
             />
             <StatCard
               label="Read-only Mode"
               value="Enabled"
-              helper="No configuration write operations exposed"
+              helper="No configuration write operations are exposed"
               tone="success"
             />
             <StatCard
-              label="Last Refreshed"
-              value={formatDateTime(data.refreshedAt)}
-              helper={freshnessStatus.label}
+              label="Data Freshness"
+              value={freshnessStatus.label}
+              helper={formatDateTime(snapshotTimestamp)}
+            />
+            <StatCard
+              label="Model Confidence"
+              value={modelConfidenceStatus.label}
+              helper="Honest completeness badge for this YANG-lite view"
             />
           </div>
 
           <Panel
-            title="Model / Device Summary"
-            description="Source availability, model scope, freshness, and selected device context for this partial model-driven view."
+            title="Node / Model Context"
+            description="Selected node context, source lineage, freshness, trust, and read-only scope for this controller/device state projection."
             action={
               <StatusBadge
-                label={availabilityStatus.label}
-                tone={availabilityStatus.tone}
+                label={modelConfidenceStatus.label}
+                tone={modelConfidenceStatus.tone}
               />
             }
             className={defenseMode ? 'panel--defense-primary' : undefined}
           >
-            <form className="query-form" onSubmit={handleNodeSubmit}>
-              <label className="field-group">
-                <span>Node / device</span>
-                <input
-                  className="input-field mono"
-                  list="model-viewer-node-options"
-                  value={nodeIdInput}
-                  onChange={(event) => setNodeIdInput(event.target.value)}
-                  placeholder={appConfig.defaultFlowNodeId}
-                />
-              </label>
+            <div className="query-form">
+              <div className="content-grid content-grid--two">
+                <label className="field-group">
+                  <span>Selected node / device</span>
+                  <select
+                    className="input-field mono"
+                    value={effectiveSelectedNodeId}
+                    onChange={(event) => setSelectedNodeId(event.target.value)}
+                    disabled={selectableNodeIds.length === 0}
+                  >
+                    {selectableNodeIds.length === 0 ? (
+                      <option value="">No nodes available</option>
+                    ) : null}
+                    {selectableNodeIds.map((nodeId) => (
+                      <option key={nodeId} value={nodeId}>
+                        {getNodeOptionLabel(nodeId)}
+                      </option>
+                    ))}
+                  </select>
+                </label>
 
-              <datalist id="model-viewer-node-options">
-                {selectableNodeIds.map((nodeId) => (
-                  <option key={nodeId} value={nodeId} />
-                ))}
-              </datalist>
+                <div className="metadata-item">
+                  <span className="metadata-label">Source Lineage</span>
+                  <div className="chip-row" style={{ marginTop: '12px' }}>
+                    {sourceLineage.length > 0 ? (
+                      sourceLineage.map((lineage) => (
+                        <span key={lineage} className="chip">
+                          {lineage}
+                        </span>
+                      ))
+                    ) : (
+                      <span className="cell-muted">
+                        No active source lineage is currently available.
+                      </span>
+                    )}
+                  </div>
+                </div>
+              </div>
 
               <div className="form-actions">
-                <button className="button" type="submit">
-                  Inspect node
+                <button
+                  className="button button--secondary"
+                  type="button"
+                  onClick={() => setSelectedNodeId(defaultNodeId)}
+                  disabled={!defaultNodeId}
+                >
+                  Use default switch
                 </button>
                 <button
                   className="button button--secondary"
                   type="button"
                   onClick={() => {
-                    const fallbackNodeId =
-                      selectableNodeIds.find(
-                        (nodeId) => nodeId === appConfig.defaultFlowNodeId,
-                      ) ?? selectableNodeIds[0]
-
-                    if (!fallbackNodeId) {
-                      return
+                    if (firstHostNodeId) {
+                      setSelectedNodeId(firstHostNodeId)
                     }
-
-                    setSelectedNodeId(fallbackNodeId)
-                    setNodeIdInput(fallbackNodeId)
                   }}
+                  disabled={!firstHostNodeId}
                 >
-                  Use default switch
+                  Use first host
                 </button>
               </div>
-            </form>
+            </div>
 
-            <div className="metadata-grid" style={{ marginTop: '20px' }}>
-              <div className="metadata-item">
-                <span className="metadata-label">Source status</span>
-                <strong className="metadata-value">
-                  {data.health.status === 'ok' ? 'Available' : 'Unavailable'}
-                </strong>
-              </div>
-              <div className="metadata-item">
-                <span className="metadata-label">Read-only status</span>
-                <strong className="metadata-value">Read only</strong>
-              </div>
-              <div className="metadata-item">
-                <span className="metadata-label">Device / node name</span>
+            <div className="model-context-grid" style={{ marginTop: '20px' }}>
+              <div className="model-context-card">
+                <span className="metadata-label">Selected node</span>
                 <strong className="metadata-value mono">
                   {effectiveSelectedNodeId || 'No node selected'}
                 </strong>
+                <p className="entity-list-meta">Current device or node projection target.</p>
               </div>
-              <div className="metadata-item">
-                <span className="metadata-label">Model scope</span>
-                <strong className="metadata-value">
-                  {getModelScope(effectiveSelectedNodeId || null)}
-                </strong>
+
+              <div className="model-context-card">
+                <span className="metadata-label">Source type</span>
+                <strong className="metadata-value">{sourceTypeLabel}</strong>
+                <p className="entity-list-meta">
+                  Derived from the selected node identity and visible controller data.
+                </p>
               </div>
-              <div className="metadata-item">
-                <span className="metadata-label">Last refreshed</span>
-                <strong className="metadata-value">
-                  {formatDateTime(data.refreshedAt)}
-                </strong>
+
+              <div className="model-context-card">
+                <span className="metadata-label">Read-only mode</span>
+                <strong className="metadata-value">Read only</strong>
+                <p className="entity-list-meta">
+                  Safe for demo use. No config writes or device mutation paths are exposed.
+                </p>
               </div>
-              <div className="metadata-item">
-                <span className="metadata-label">Snapshot time</span>
+
+              <div className="model-context-card">
+                <span className="metadata-label">Data freshness</span>
+                <strong className="metadata-value">{freshnessStatus.label}</strong>
+                <p className="entity-list-meta">{freshnessStatus.detail}</p>
+              </div>
+
+              <div className="model-context-card">
+                <span className="metadata-label">Source lineage</span>
                 <strong className="metadata-value">
-                  {formatDateTime(snapshotTimestamp)}
+                  {sourceLineage.length > 0 ? sourceLineage.join(' / ') : 'Unavailable'}
                 </strong>
+                <p className="entity-list-meta">
+                  Lineage is shown explicitly so the operator can explain the projection.
+                </p>
+              </div>
+
+              <div className="model-context-card">
+                <span className="metadata-label">Model confidence / completeness</span>
+                <strong className="metadata-value">{modelConfidenceStatus.label}</strong>
+                <p className="entity-list-meta">{modelConfidenceStatus.detail}</p>
               </div>
             </div>
 
-            <div className="form-actions" style={{ marginTop: '16px' }}>
-              <StatusBadge
-                label={data.health.status === 'ok' ? 'Source available' : 'Source unavailable'}
-                tone={data.health.status === 'ok' ? 'success' : 'danger'}
-              />
+            <div className="form-actions" style={{ marginTop: '18px' }}>
               <StatusBadge label={freshnessStatus.label} tone={freshnessStatus.tone} />
-              <StatusBadge label="Read-only model view" tone="neutral" />
+              <StatusBadge
+                label={modelConfidenceStatus.label}
+                tone={modelConfidenceStatus.tone}
+              />
+              <StatusBadge label="Read-only" tone="neutral" />
+              {sourceLineage.includes('Inventory-derived') ? (
+                <StatusBadge label="Inventory-derived" tone="neutral" />
+              ) : null}
+              {sourceLineage.includes('Topology-derived') ? (
+                <StatusBadge label="Topology-derived" tone="neutral" />
+              ) : null}
+              {sourceLineage.includes('Controller-derived') ? (
+                <StatusBadge label="Controller-derived" tone="neutral" />
+              ) : null}
             </div>
-
-            <p className="entity-list-meta" style={{ marginTop: '16px' }}>
-              This page presents a controller/device state view using the current
-              inventory and topology snapshot. It is intentionally partial and read
-              only, so the operator can discuss model-driven management safely during
-              the demo.
-            </p>
           </Panel>
 
           {effectiveSelectedNodeId &&
@@ -395,7 +1133,7 @@ export function ModelViewerPage() {
           !selectedRawNode ? (
             <EmptyState
               title="No model snapshot for selected node"
-              description="Choose a node returned by the current inventory or topology snapshot."
+              description="Choose a node currently visible in the inventory or topology-derived sources to inspect a read-only YANG-lite projection."
             />
           ) : null}
 
@@ -404,288 +1142,109 @@ export function ModelViewerPage() {
               <div className="content-grid content-grid--two">
                 <Panel
                   title="Config View"
-                  description="Declarative and identity-oriented fields shown as a safe configuration-style snapshot."
+                  description="Config-like identity, naming, bridge role, and intended structure shown as a safe YANG-lite projection."
                   className={defenseMode ? 'panel--defense-primary' : undefined}
-                  action={<StatusBadge label="Read only" tone="neutral" />}
+                  action={
+                    <StatusBadge
+                      label={
+                        hasInventoryView ? 'Config-light snapshot' : 'Observational only'
+                      }
+                      tone={hasInventoryView ? 'warning' : 'danger'}
+                    />
+                  }
                 >
-                  <div className="metadata-grid">
-                    <div className="metadata-item">
-                      <span className="metadata-label">Node ID</span>
-                      <strong className="metadata-value mono">
-                        {effectiveSelectedNodeId}
-                      </strong>
-                    </div>
-                    <div className="metadata-item">
-                      <span className="metadata-label">Node type</span>
-                      <strong className="metadata-value">{selectedNodeType}</strong>
-                    </div>
-                    <div className="metadata-item">
-                      <span className="metadata-label">Inventory reference</span>
-                      <strong className="metadata-value mono">
-                        {formatValue(inventoryReference)}
-                      </strong>
-                    </div>
-                    <div className="metadata-item">
-                      <span className="metadata-label">Description</span>
-                      <strong className="metadata-value">
-                        {formatValue(selectedInventoryNode?.description)}
-                      </strong>
-                    </div>
-                    <div className="metadata-item">
-                      <span className="metadata-label">Manufacturer</span>
-                      <strong className="metadata-value">
-                        {formatValue(selectedInventoryNode?.manufacturer)}
-                      </strong>
-                    </div>
-                    <div className="metadata-item">
-                      <span className="metadata-label">Hardware</span>
-                      <strong className="metadata-value">
-                        {formatValue(selectedInventoryNode?.hardware)}
-                      </strong>
-                    </div>
-                    <div className="metadata-item">
-                      <span className="metadata-label">Software</span>
-                      <strong className="metadata-value">
-                        {formatValue(selectedInventoryNode?.software)}
-                      </strong>
-                    </div>
-                    <div className="metadata-item">
-                      <span className="metadata-label">Serial number</span>
-                      <strong className="metadata-value">
-                        {formatValue(selectedInventoryNode?.serial_number)}
-                      </strong>
-                    </div>
-                    <div className="metadata-item">
-                      <span className="metadata-label">Management IP</span>
-                      <strong className="metadata-value">
-                        {formatValue(selectedInventoryNode?.ip_address)}
-                      </strong>
-                    </div>
-                    <div className="metadata-item">
-                      <span className="metadata-label">Configured connectors</span>
-                      <strong className="metadata-value">
-                        {formatNumber(selectedInventoryNode?.connector_count ?? 0)}
-                      </strong>
-                    </div>
+                  <div className="content-grid">
+                    {configViewGroups.map((group) => (
+                      <div key={group.id} className="metadata-item">
+                        <span className="metadata-label">{group.title}</span>
+                        <p className="entity-list-meta" style={{ marginTop: '10px' }}>
+                          {group.summary}
+                        </p>
+                        <ModelFieldList fields={group.fields} />
+                      </div>
+                    ))}
                   </div>
                 </Panel>
 
                 <Panel
                   title="Operational View"
-                  description="Live controller-facing operational state, counters, topology presence, and snapshot freshness."
+                  description="Operational-like state for live status, counters, topology presence, connector count, and flow exposure."
                   className={defenseMode ? 'panel--defense-primary' : undefined}
                   action={
                     <StatusBadge label={freshnessStatus.label} tone={freshnessStatus.tone} />
                   }
                 >
-                  <div className="metadata-grid">
-                    <div className="metadata-item">
-                      <span className="metadata-label">Controller status</span>
-                      <strong className="metadata-value">
-                        {data.health.status === 'ok' ? 'Operational' : 'Unavailable'}
-                      </strong>
-                    </div>
-                    <div className="metadata-item">
-                      <span className="metadata-label">Topology presence</span>
-                      <strong className="metadata-value">
-                        {selectedTopologyNode || selectedRawNode ? 'Observed' : 'Not observed'}
-                      </strong>
-                    </div>
-                    <div className="metadata-item">
-                      <span className="metadata-label">Flow count</span>
-                      <strong className="metadata-value">
-                        {formatNumber(selectedInventoryNode?.flow_count ?? 0)}
-                      </strong>
-                    </div>
-                    <div className="metadata-item">
-                      <span className="metadata-label">Table count</span>
-                      <strong className="metadata-value">
-                        {formatNumber(selectedInventoryNode?.table_count ?? 0)}
-                      </strong>
-                    </div>
-                    <div className="metadata-item">
-                      <span className="metadata-label">Connector count</span>
-                      <strong className="metadata-value">
-                        {formatNumber(selectedInventoryNode?.connector_count ?? 0)}
-                      </strong>
-                    </div>
-                    <div className="metadata-item">
-                      <span className="metadata-label">Termination points</span>
-                      <strong className="metadata-value">
-                        {formatNumber(
-                          selectedTopologyNode?.termination_point_count ??
-                            terminationPoints.length,
-                        )}
-                      </strong>
-                    </div>
-                    <div className="metadata-item">
-                      <span className="metadata-label">Attachment points</span>
-                      <strong className="metadata-value">
-                        {formatNumber(attachmentPoints.length)}
-                      </strong>
-                    </div>
-                    <div className="metadata-item">
-                      <span className="metadata-label">Known addresses</span>
-                      <strong className="metadata-value">
-                        {formatNumber(addresses.length)}
-                      </strong>
-                    </div>
-                    <div className="metadata-item">
-                      <span className="metadata-label">Packet counters</span>
-                      <strong className="metadata-value">
-                        {connectorPacketText || 'Unavailable'}
-                      </strong>
-                    </div>
-                    <div className="metadata-item">
-                      <span className="metadata-label">Byte counters</span>
-                      <strong className="metadata-value">
-                        {connectorByteText || 'Unavailable'}
-                      </strong>
-                    </div>
+                  <div className="content-grid">
+                    {operationalViewGroups.map((group) => (
+                      <div key={group.id} className="metadata-item">
+                        <span className="metadata-label">{group.title}</span>
+                        <p className="entity-list-meta" style={{ marginTop: '10px' }}>
+                          {group.summary}
+                        </p>
+                        <ModelFieldList fields={group.fields} />
+                      </div>
+                    ))}
                   </div>
                 </Panel>
               </div>
 
               <Panel
-                title="Model Explorer"
-                description="Grouped YANG-lite sections for system identity, interfaces, ports, and bridge or switch state."
+                title="Config vs Operational Difference Hints"
+                description="Simple difference labels help explain whether the current node looks aligned, partial, observational only, or config-light."
+                action={
+                  <StatusBadge
+                    label={differenceHints[0]?.label ?? 'Partial'}
+                    tone={differenceHints[0]?.tone ?? 'warning'}
+                  />
+                }
+              >
+                <ul className="entity-list">
+                  {differenceHints.map((hint) => (
+                    <li key={`${hint.label}-${hint.summary}`} className="entity-list-item">
+                      <div>
+                        <div className="entity-list-heading">
+                          <strong>{hint.label}</strong>
+                          <StatusBadge label={hint.label} tone={hint.tone} />
+                        </div>
+                        <p className="entity-list-meta">{hint.summary}</p>
+                      </div>
+                    </li>
+                  ))}
+                </ul>
+              </Panel>
+
+              <Panel
+                title="Model Explorer v2"
+                description="Grouped YANG-lite sections for system, bridge or switch state, interfaces, ports or connectors, control-plane visibility, and inventory linkage."
                 className={defenseMode ? 'panel--defense-primary' : undefined}
               >
-                <div className="content-grid content-grid--two">
-                  <div className="metadata-item">
-                    <span className="metadata-label">system</span>
-                    <div style={{ marginTop: '12px', display: 'grid', gap: '10px' }}>
-                      <div>
-                        <strong className="metadata-value mono">
-                          {effectiveSelectedNodeId}
-                        </strong>
-                        <p className="entity-list-meta">
-                          {getModelScope(effectiveSelectedNodeId)}
-                        </p>
-                      </div>
-                      <div>
-                        <strong className="metadata-value">
-                          {formatValue(selectedInventoryNode?.manufacturer)}
-                        </strong>
-                        <p className="entity-list-meta">Manufacturer</p>
-                      </div>
-                      <div>
-                        <strong className="metadata-value">
-                          {formatValue(selectedInventoryNode?.software)}
-                        </strong>
-                        <p className="entity-list-meta">Software</p>
-                      </div>
-                      <div>
-                        <strong className="metadata-value">
-                          {formatValue(selectedInventoryNode?.ip_address)}
-                        </strong>
-                        <p className="entity-list-meta">Management IP</p>
-                      </div>
-                    </div>
-                  </div>
-
-                  <div className="metadata-item">
-                    <span className="metadata-label">interfaces</span>
-                    {selectedInventoryNode?.connectors.length ? (
-                      <ul className="entity-list" style={{ marginTop: '12px' }}>
-                        {selectedInventoryNode.connectors.slice(0, 6).map((connector) => (
-                          <li key={connector.connector_id} className="entity-list-item">
-                            <div>
-                              <div className="entity-list-heading">
-                                <span className="mono">{connector.connector_id}</span>
-                                <StatusBadge
-                                  label={formatConnectorState(connector.state)}
-                                  tone={connector.state?.live ? 'success' : 'neutral'}
-                                />
-                              </div>
-                              <p className="entity-list-meta">
-                                {connector.name ?? 'Unnamed interface'}
-                              </p>
-                            </div>
-                            <span className="entity-list-trailing mono">
-                              {formatValue(connector.configuration)}
-                            </span>
-                          </li>
-                        ))}
-                      </ul>
-                    ) : (
-                      <p className="entity-list-meta" style={{ marginTop: '12px' }}>
-                        No interface snapshot is currently available for this node.
-                      </p>
-                    )}
-                  </div>
-
-                  <div className="metadata-item">
-                    <span className="metadata-label">ports</span>
-                    {selectedInventoryNode?.connectors.length ? (
-                      <ul className="entity-list" style={{ marginTop: '12px' }}>
-                        {selectedInventoryNode.connectors.slice(0, 6).map((connector) => (
-                          <li key={`${connector.connector_id}-port`} className="entity-list-item">
-                            <div>
-                              <div className="entity-list-heading">
-                                <span className="mono">
-                                  Port {formatValue(connector.port_number)}
-                                </span>
-                              </div>
-                              <p className="entity-list-meta">
-                                {formatPacketPair(
-                                  connector.statistics?.packets?.received,
-                                  connector.statistics?.packets?.transmitted,
-                                )}
-                              </p>
-                              <p className="entity-list-meta">
-                                {formatBytePair(
-                                  connector.statistics?.bytes?.received,
-                                  connector.statistics?.bytes?.transmitted,
-                                )}
-                              </p>
-                            </div>
-                            <span className="entity-list-trailing mono">
-                              {connector.hardware_address ?? 'No MAC'}
-                            </span>
-                          </li>
-                        ))}
-                      </ul>
-                    ) : (
-                      <p className="entity-list-meta" style={{ marginTop: '12px' }}>
-                        Port-level counters are unavailable for this node snapshot.
-                      </p>
-                    )}
-                  </div>
-
-                  <div className="metadata-item">
-                    <span className="metadata-label">bridge / switch state</span>
-                    <div style={{ marginTop: '12px', display: 'grid', gap: '10px' }}>
-                      <div>
-                        <strong className="metadata-value">
-                          {formatNumber(selectedInventoryNode?.flow_count ?? 0)}
-                        </strong>
-                        <p className="entity-list-meta">Observed installed flows</p>
-                      </div>
-                      <div>
-                        <strong className="metadata-value">
-                          {formatNumber(selectedInventoryNode?.table_count ?? 0)}
-                        </strong>
-                        <p className="entity-list-meta">Exposed flow tables</p>
-                      </div>
-                      <div>
-                        <strong className="metadata-value">
-                          {formatNumber(
-                            selectedTopologyNode?.termination_point_count ??
-                              terminationPoints.length,
-                          )}
-                        </strong>
-                        <p className="entity-list-meta">Topology termination points</p>
-                      </div>
-                      <div>
-                        <strong className="metadata-value">
-                          {formatValue(selectedInventoryNode?.snapshot?.end?.succeeded)}
-                        </strong>
-                        <p className="entity-list-meta">Snapshot succeeded</p>
-                      </div>
-                    </div>
-                  </div>
+                <div className="model-section-grid">
+                  {explorerGroups.map((group) => (
+                    <ModelGroupDetails key={group.id} group={group} />
+                  ))}
                 </div>
+              </Panel>
+
+              <Panel
+                title="Raw JSON Inspector"
+                description="Hidden by default. Expand only when you need the compact pretty-printed model snapshot JSON for defense or evaluator discussion."
+              >
+                <details className="model-raw-inspector">
+                  <summary className="model-section-summary">
+                    <div>
+                      <strong className="model-section-title">
+                        Open raw model snapshot JSON
+                      </strong>
+                      <p className="model-section-copy">
+                        This inspector shows the current read-only model projection for the
+                        selected node. It does not expose configuration write paths.
+                      </p>
+                    </div>
+                  </summary>
+                  <div className="model-section-body">
+                    <pre className="model-raw-pre">{rawSnapshotJson}</pre>
+                  </div>
+                </details>
               </Panel>
             </>
           ) : null}
