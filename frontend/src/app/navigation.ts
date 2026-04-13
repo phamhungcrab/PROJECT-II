@@ -10,6 +10,11 @@ export const navigationItems = [
     description: 'Operational alerts for drift, stale telemetry, evidence gaps, and demo hygiene.',
   },
   {
+    path: '/metrics-center',
+    label: 'Metrics Center',
+    description: 'Evaluation metrics, evidence coverage, and readiness snapshot.',
+  },
+  {
     path: '/demo-assistant',
     label: 'Demo Assistant',
     description: 'Scenario runbook, speaker cues, and safe operator actions for defense mode.',

@@ -834,6 +834,115 @@ p {
   gap: 12px;
 }
 
+.metrics-stack {
+  display: grid;
+  gap: 14px;
+}
+
+.metric-bar-card {
+  padding: 16px;
+  border-radius: 16px;
+  background: rgba(240, 246, 252, 0.72);
+  border: 1px solid rgba(150, 169, 188, 0.16);
+}
+
+.metric-bar-header {
+  display: flex;
+  justify-content: space-between;
+  align-items: flex-start;
+  gap: 14px;
+}
+
+.metric-bar-title {
+  display: block;
+  font-size: 0.96rem;
+}
+
+.metric-bar-helper {
+  margin-top: 6px;
+  color: var(--text-secondary);
+  font-size: 0.92rem;
+}
+
+.metric-bar-value {
+  color: var(--text-primary);
+  font-size: 0.92rem;
+  font-weight: 700;
+  white-space: nowrap;
+}
+
+.metric-bar-track {
+  margin-top: 12px;
+  height: 12px;
+  border-radius: 999px;
+  overflow: hidden;
+  background: rgba(16, 32, 51, 0.08);
+}
+
+.metric-bar-fill {
+  height: 100%;
+  border-radius: inherit;
+}
+
+.metric-bar-fill--accent {
+  background: linear-gradient(90deg, var(--accent), var(--accent-strong));
+}
+
+.metric-bar-fill--success {
+  background: linear-gradient(90deg, rgba(21, 128, 61, 0.92), rgba(34, 197, 94, 0.88));
+}
+
+.metric-bar-fill--warning {
+  background: linear-gradient(90deg, rgba(180, 83, 9, 0.94), rgba(245, 158, 11, 0.88));
+}
+
+.metric-bar-fill--danger {
+  background: linear-gradient(90deg, rgba(185, 28, 28, 0.94), rgba(248, 113, 113, 0.86));
+}
+
+.metric-bar-fill--neutral {
+  background: linear-gradient(90deg, rgba(82, 102, 124, 0.92), rgba(148, 163, 184, 0.86));
+}
+
+.metrics-segmented-bar {
+  display: flex;
+  height: 14px;
+  border-radius: 999px;
+  overflow: hidden;
+  background: rgba(16, 32, 51, 0.08);
+  border: 1px solid rgba(150, 169, 188, 0.16);
+}
+
+.metrics-segment {
+  height: 100%;
+}
+
+.metrics-segment--accent {
+  background: linear-gradient(90deg, var(--accent), var(--accent-strong));
+}
+
+.metrics-segment--success {
+  background: linear-gradient(90deg, rgba(21, 128, 61, 0.9), rgba(34, 197, 94, 0.86));
+}
+
+.metrics-segment--warning {
+  background: linear-gradient(90deg, rgba(180, 83, 9, 0.92), rgba(245, 158, 11, 0.86));
+}
+
+.metrics-segment--danger {
+  background: linear-gradient(90deg, rgba(185, 28, 28, 0.92), rgba(248, 113, 113, 0.84));
+}
+
+.metrics-segment--neutral {
+  background: linear-gradient(90deg, rgba(82, 102, 124, 0.92), rgba(148, 163, 184, 0.84));
+}
+
+.metrics-definition {
+  margin-top: 12px;
+  color: var(--text-secondary);
+  font-size: 0.92rem;
+}
+
 @keyframes spin {
   to {
     transform: rotate(360deg);
