@@ -1,6 +1,9 @@
+import { useEffect, useState } from 'react'
 import { NavLink, Outlet, useLocation } from 'react-router-dom'
+import type { DefenseModeOutletContext } from '../../app/defenseMode'
 import { navigationItems } from '../../app/navigation'
 import { appConfig } from '../../config/appConfig'
+import { StatusBadge } from '../ui/StatusBadge'
 
 const checkedAtFormatter = new Intl.DateTimeFormat('en-US', {
   dateStyle: 'medium',
@@ -8,13 +11,30 @@ const checkedAtFormatter = new Intl.DateTimeFormat('en-US', {
 })
 
 export function AppShell() {
+  const [defenseMode, setDefenseMode] = useState(() => {
+    if (typeof window === 'undefined') {
+      return false
+    }
+
+    return window.localStorage.getItem('sdn-defense-mode') === 'enabled'
+  })
   const location = useLocation()
   const currentPage =
     navigationItems.find((item) => location.pathname.startsWith(item.path)) ??
     navigationItems[0]
+  const outletContext: DefenseModeOutletContext = {
+    defenseMode,
+  }
+
+  useEffect(() => {
+    window.localStorage.setItem(
+      'sdn-defense-mode',
+      defenseMode ? 'enabled' : 'disabled',
+    )
+  }, [defenseMode])
 
   return (
-    <div className="app-shell">
+    <div className={`app-shell${defenseMode ? ' app-shell--defense' : ''}`}>
       <aside className="sidebar">
         <div className="brand-block">
           <div className="brand-mark">SDN</div>
@@ -58,15 +78,33 @@ export function AppShell() {
               <span>Platform</span>
               <strong>FastAPI + OpenDaylight</strong>
             </div>
-            <div className="meta-card">
-              <span>Checked</span>
-              <strong>{checkedAtFormatter.format(new Date())}</strong>
+          <div className="meta-card">
+            <span>Checked</span>
+            <strong>{checkedAtFormatter.format(new Date())}</strong>
+          </div>
+          <div className="meta-card meta-card--defense">
+            <span>Presentation</span>
+            <strong>{defenseMode ? 'Defense Mode' : 'Standard View'}</strong>
+            <div className="meta-card-actions">
+              <StatusBadge
+                label={defenseMode ? 'Presenter Emphasis On' : 'Presenter Emphasis Off'}
+                tone={defenseMode ? 'success' : 'neutral'}
+              />
+              <button
+                className="button button--ghost"
+                type="button"
+                onClick={() => setDefenseMode((current) => !current)}
+                aria-pressed={defenseMode}
+              >
+                {defenseMode ? 'Disable Defense Mode' : 'Enable Defense Mode'}
+              </button>
             </div>
           </div>
+        </div>
         </header>
 
         <main className="content-shell">
-          <Outlet />
+          <Outlet context={outletContext} />
         </main>
       </div>
     </div>

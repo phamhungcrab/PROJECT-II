@@ -1,4 +1,6 @@
 import { useEffect, useState } from 'react'
+import { Link } from 'react-router-dom'
+import { useDefenseMode } from '../app/defenseMode'
 import { ErrorState } from '../components/state/ErrorState'
 import { LoadingState } from '../components/state/LoadingState'
 import { Panel } from '../components/ui/Panel'
@@ -6,8 +8,14 @@ import { StatCard } from '../components/ui/StatCard'
 import { StatusBadge } from '../components/ui/StatusBadge'
 import { appConfig } from '../config/appConfig'
 import { useApiResource } from '../hooks/useApiResource'
+import { policyApi } from '../services/api/policyApi'
 import { sdnApi } from '../services/api/sdnApi'
-import { classifyNode, formatDateTime, formatNumber } from '../utils/formatters'
+import {
+  buildOperationalAlerts,
+  getAlertSeverityTone,
+  summarizeAlerts,
+} from '../utils/alertCenter'
+import { classifyNode, formatDateTime, formatLabel, formatNumber } from '../utils/formatters'
 
 interface DashboardData {
   health: Awaited<ReturnType<typeof sdnApi.getHealth>>
@@ -59,10 +67,48 @@ function createOperationTimestamp() {
   return new Date().toLocaleTimeString('en-GB', { hour12: false })
 }
 
+function getComplianceTone(compliance: string) {
+  if (compliance === 'COMPLIANT') {
+    return 'success' as const
+  }
+
+  if (compliance === 'PARTIAL') {
+    return 'warning' as const
+  }
+
+  if (compliance === 'DRIFT') {
+    return 'danger' as const
+  }
+
+  return 'neutral' as const
+}
+
+function getResultTone(result: string) {
+  if (result === 'success') {
+    return 'success' as const
+  }
+
+  if (result === 'failed') {
+    return 'danger' as const
+  }
+
+  return 'neutral' as const
+}
+
 export function DashboardPage() {
+  const { defenseMode } = useDefenseMode()
   const [policyLoadingAction, setPolicyLoadingAction] = useState<string | null>(null)
   const [policyError, setPolicyError] = useState<string | null>(null)
   const [policyResult, setPolicyResult] = useState<string | null>(null)
+  const [dashboardPolicyActionLoading, setDashboardPolicyActionLoading] = useState<
+    string | null
+  >(null)
+  const [dashboardPolicyActionError, setDashboardPolicyActionError] = useState<
+    string | null
+  >(null)
+  const [dashboardPolicyActionMessage, setDashboardPolicyActionMessage] = useState<
+    string | null
+  >(null)
   const [policyStatus, setPolicyStatus] = useState<PolicyStatus | null>(null)
   const [policyStatusError, setPolicyStatusError] = useState<string | null>(null)
   const [ovsEvidence, setOvsEvidence] = useState<OvsEvidence | null>(null)
@@ -86,6 +132,9 @@ export function DashboardPage() {
     },
     [],
   )
+  const policySummaryQuery = useApiResource(policyApi.getSummary, [])
+  const policyEventsQuery = useApiResource(policyApi.getEvents, [])
+  const policyDriftQuery = useApiResource(policyApi.getDriftSummary, [])
 
   const inventoryConnectorCount =
     data?.inventory.nodes.reduce(
@@ -99,7 +148,15 @@ export function DashboardPage() {
     0
   const latestSnapshot =
     data?.inventory.nodes.find((node) => node.snapshot?.end?.end)?.snapshot?.end?.end
-  const isPolicyBusy = Boolean(policyLoadingAction || scenarioLoadingAction)
+  const isPolicyBusy = Boolean(
+    policyLoadingAction || scenarioLoadingAction || dashboardPolicyActionLoading,
+  )
+  const recentPolicyEvents = (policyEventsQuery.data?.events ?? []).slice(0, 5)
+  const driftedPolicies = policyDriftQuery.data?.drifted_policies ?? []
+  const desiredEnabledPolicies =
+    policySummaryQuery.data?.policies.filter(
+      (policy) => policy.desired_state === 'ENABLED',
+    ) ?? []
   const ovsEvidenceFlows = ovsEvidence?.flows ?? []
   const ovsBaseFlowCount = ovsEvidenceFlows.filter((flow) => flow.flow_type === 'base').length
   const ovsPolicyFlows = ovsEvidenceFlows.filter((flow) => flow.flow_type === 'policy')
@@ -130,6 +187,169 @@ export function DashboardPage() {
     policyStatus.isolate_h1_enabled === hasIsolationPolicyFlow
   const requiresOperatorAttention =
     policyStatus !== null && ovsEvidence !== null && !isEvidenceAligned
+  const driftCount = policyDriftQuery.data?.drift_count ?? 0
+  const partialCount = policyDriftQuery.data?.partial_count ?? 0
+  const compliantCount = policyDriftQuery.data?.compliant_count ?? 0
+  const unknownCount = policyDriftQuery.data?.unknown_count ?? 0
+  const driftHeadline =
+    driftCount > 0
+      ? `${formatNumber(driftCount)} drifted polic${driftCount === 1 ? 'y' : 'ies'} require operator attention.`
+      : partialCount > 0
+        ? `${formatNumber(partialCount)} polic${partialCount === 1 ? 'y is' : 'ies are'} partially enforced and should be monitored.`
+        : 'Control plane state is aligned with the current policy set.'
+  const recoveryNarrative =
+    driftCount > 0 || requiresOperatorAttention
+      ? 'Recover Baseline is ready if the lab needs immediate realignment.'
+      : isBaselineActive
+        ? 'Baseline forwarding is already active and recovery remains available.'
+        : 'Rollback and baseline recovery paths are available from the operator console.'
+  const defensePositioningPoints = [
+    `SDN management platform with ${formatNumber(
+      policySummaryQuery.data?.total_policies ?? 0,
+    )} tracked policy objects and live control actions.`,
+    `Policy lifecycle is visible from desired state to apply, verify, rollback, and recovery.`,
+    `Live enforcement evidence currently shows ${formatNumber(
+      ovsPolicyFlows.length,
+    )} policy flows and ${formatNumber(ovsBaseFlowCount)} base flows on OVS.`,
+    `Drift detection is active with ${formatNumber(driftCount)} drift and ${formatNumber(
+      partialCount,
+    )} partial policies in the current snapshot.`,
+    `Recovery remains explicit through rollback paths and baseline restoration.`,
+  ]
+  const defenseDepthBullets = [
+    'This is not only topology observation; the operator can change live policy state.',
+    'Policy intent, switch evidence, and compliance are visible in the same console.',
+    'Recent events and verification history create an auditable control loop.',
+    'Recovery is designed into the workflow instead of being an afterthought.',
+  ]
+  const finalScoringNarrative = [
+    {
+      title: 'Product Depth',
+      detail: `${formatNumber(
+        policySummaryQuery.data?.total_policies ?? 0,
+      )} policy objects, Dashboard controls, and Policy Center workflows show a usable operator product surface.`,
+    },
+    {
+      title: 'Live Enforcement',
+      detail: `${formatNumber(ovsPolicyFlows.length)} policy flows and ${formatNumber(
+        ovsBaseFlowCount,
+      )} base flows are read from OVS to prove switch-side state.`,
+    },
+    {
+      title: 'Closed-loop Verification',
+      detail: `${formatNumber(compliantCount)} compliant, ${formatNumber(
+        driftCount,
+      )} drift, and ${formatNumber(partialCount)} partial policies show that intent is being checked against live enforcement.`,
+    },
+    {
+      title: 'Evidence-driven Operations',
+      detail: `${formatNumber(recentPolicyEvents.length)} recent policy events and live OVS evidence give the operator a concrete audit trail during demo and review.`,
+    },
+    {
+      title: 'Recovery / Safety',
+      detail: recoveryNarrative,
+    },
+  ]
+  const controllerReachable = data?.health.status === 'ok'
+  const topologySwitchCount = data?.topology.switch_count ?? 0
+  const topologyHostCount = data?.topology.host_count ?? 0
+  const openingStatement = `${appConfig.appName} turns this SDN lab into an operator console rather than a manual network exercise. The operator can observe desired state, apply policy, verify live OVS evidence, detect drift, and recover to baseline in one workflow. That is the core value being demonstrated during the defense.`
+  const architectureSummary = [
+    'React + Vite operator console for live control and narration.',
+    'FastAPI policy/control layer as the operational backend.',
+    'OpenDaylight as the SDN controller integration point.',
+    'Mininet + OVS as the live enforcement environment.',
+  ]
+  const technicalContributions = [
+    'Policy lifecycle from desired state to apply, verify, rollback, and recovery.',
+    'Live OVS evidence and classified enforcement flows visible in the UI.',
+    'Closed-loop drift detection between policy intent and switch state.',
+    'Evidence-driven operations with recent events, verification history, and reports.',
+  ]
+  const liveDemoSequence = [
+    'Start in Baseline and confirm aligned control state.',
+    'Run Ping Block Demo and show Policy Center evidence.',
+    'Open Flows page and point at live OVS policy flows.',
+    'Recover Baseline before moving to the next restrictive scenario.',
+    'Run HTTP Block Demo and narrate compliance plus recovery readiness.',
+    'Close with drift, evidence, and rollback/recovery summary.',
+  ]
+  const preDefenseChecklist = [
+    {
+      label: 'ODL reachable',
+      ready: controllerReachable,
+      note: data
+        ? `${data.health.controller.type} at ${data.health.controller.base_url}`
+        : 'Controller health data is still loading.',
+    },
+    {
+      label: 'Backend reachable',
+      ready: controllerReachable,
+      note: data
+        ? `${data.health.service} health is ${formatLabel(data.health.status)}`
+        : 'Backend health data is still loading.',
+    },
+    {
+      label: 'Frontend reachable',
+      ready: true,
+      note: 'Dashboard is rendered and operator controls are available.',
+    },
+    {
+      label: 'Mininet ready',
+      ready: topologySwitchCount > 0 && topologyHostCount > 0,
+      note: `${formatNumber(topologySwitchCount)} switches and ${formatNumber(
+        topologyHostCount,
+      )} hosts discovered in topology.`,
+    },
+    {
+      label: 'Baseline recovered',
+      ready: isBaselineActive,
+      note: isBaselineActive
+        ? 'Base forwarding is active and restrictive policies are cleared.'
+        : 'Run Recover Baseline before starting the defense sequence.',
+    },
+    {
+      label: 'Policy Center loaded',
+      ready: Boolean(policySummaryQuery.data),
+      note: policySummaryQuery.data
+        ? 'Policy objects, compliance, and drift data are available.'
+        : 'Open Policy Center and refresh once before presenting.',
+    },
+    {
+      label: 'Flows page ready',
+      ready: Boolean(ovsEvidence),
+      note: ovsEvidence
+        ? `OVS evidence is loaded with ${formatNumber(ovsEvidence.flow_count)} flows.`
+        : 'Open Flows and refresh live OVS flows before presenting.',
+    },
+    {
+      label: 'Demo Assistant ready',
+      ready: Boolean(policySummaryQuery.data && policyEventsQuery.data),
+      note: 'Scenario runbook and speaker assist are available for guided narration.',
+    },
+  ]
+  const closingStatement =
+    'This project demonstrates more than monitoring. It shows a usable SDN management product with live enforcement evidence, closed-loop verification, drift awareness, and explicit recovery paths that make the lab operationally credible.'
+  const dashboardAlerts = buildOperationalAlerts({
+    checkedAt: latestSnapshot ?? new Date().toISOString(),
+    health: data?.health ?? null,
+    healthError: error,
+    inventory: data?.inventory ?? null,
+    policySummary: policySummaryQuery.data,
+    policySummaryError: policySummaryQuery.error,
+    driftSummary: policyDriftQuery.data,
+    driftError: policyDriftQuery.error,
+    demoStatus: policyStatus,
+    demoStatusError: policyStatusError,
+    ovsEvidence,
+    ovsEvidenceError,
+    latestSnapshot,
+  })
+  const dashboardAlertSummary = summarizeAlerts(dashboardAlerts)
+  const topDashboardAlerts = dashboardAlerts
+    .filter((alert) => alert.severity !== 'info')
+    .slice(0, 3)
+  const dashboardPrimaryAlert = topDashboardAlerts[0] ?? dashboardAlerts[0] ?? null
 
   function appendOperationLog(action: string, result: OperationLogEntry['result']) {
     setOperationLogs((current) =>
@@ -254,8 +474,88 @@ export function DashboardPage() {
   }, [])
 
   async function refreshOperationalState() {
+    policySummaryQuery.reload()
+    policyEventsQuery.reload()
+    policyDriftQuery.reload()
     await Promise.all([loadPolicyStatus(), loadOvsEvidence()])
     void reload()
+  }
+
+  async function handleRefreshPolicyState() {
+    setDashboardPolicyActionLoading('Refresh Policy State')
+    setDashboardPolicyActionError(null)
+    setDashboardPolicyActionMessage(null)
+
+    try {
+      await refreshOperationalState()
+      setDashboardPolicyActionMessage(
+        'Policy state, drift watch, and live switch evidence were refreshed.',
+      )
+      appendOperationLog('Refresh Policy State', 'success')
+    } catch (requestError) {
+      const message =
+        requestError instanceof Error
+          ? requestError.message
+          : 'Unable to refresh policy state'
+
+      setDashboardPolicyActionError(message)
+      appendOperationLog('Refresh Policy State', 'failed')
+    } finally {
+      setDashboardPolicyActionLoading(null)
+    }
+  }
+
+  async function handleVerifyKeyPolicies() {
+    const keyPolicyIds = [
+      'baseline_forwarding',
+      'block_ping_h1_h2',
+      'block_http_h1_h2',
+      'isolate_h1',
+    ]
+
+    setDashboardPolicyActionLoading('Verify Key Policies')
+    setDashboardPolicyActionError(null)
+    setDashboardPolicyActionMessage(null)
+
+    try {
+      const responses = []
+
+      for (const policyId of keyPolicyIds) {
+        responses.push(await policyApi.verifyPolicy(policyId))
+      }
+
+      setPolicyResult(
+        JSON.stringify(
+          {
+            action: 'verify-key-policies',
+            verified_policies: responses.map((response) => ({
+              id: response.policy.id,
+              name: response.policy.name,
+              compliance: response.policy.compliance,
+              live_state: response.policy.live_state,
+              timestamp: response.event.timestamp,
+            })),
+          },
+          null,
+          2,
+        ),
+      )
+      setDashboardPolicyActionMessage(
+        `Verified ${formatNumber(responses.length)} key policies against live OVS evidence.`,
+      )
+      appendOperationLog('Verify Key Policies', 'success')
+      await refreshOperationalState()
+    } catch (requestError) {
+      const message =
+        requestError instanceof Error
+          ? requestError.message
+          : 'Unable to verify key policies'
+
+      setDashboardPolicyActionError(message)
+      appendOperationLog('Verify Key Policies', 'failed')
+    } finally {
+      setDashboardPolicyActionLoading(null)
+    }
   }
 
   async function runPolicyAction(
@@ -422,6 +722,727 @@ export function DashboardPage() {
               tone="success"
             />
           </div>
+
+          {defenseMode ? (
+            <Panel
+              title="Final Defense Pack"
+              description="Compact on-screen defense helper for opening, architecture, live sequence, and final closing."
+              className="panel--defense-primary"
+              action={
+                <StatusBadge
+                  label="Defense Mode Pack"
+                  tone="success"
+                />
+              }
+            >
+              <div className="content-grid content-grid--two">
+                <div className="metadata-item">
+                  <span className="metadata-label">Project Title</span>
+                  <strong className="metadata-value">{appConfig.appName}</strong>
+                  <p className="entity-list-meta" style={{ marginTop: '10px' }}>
+                    Policy lifecycle, enforcement evidence, drift detection, and
+                    recovery for the SDN lab.
+                  </p>
+                </div>
+
+                <div className="metadata-item">
+                  <span className="metadata-label">Opening Statement</span>
+                  <p className="entity-list-meta" style={{ marginTop: '12px' }}>
+                    {openingStatement}
+                  </p>
+                </div>
+              </div>
+
+              <div className="content-grid content-grid--two" style={{ marginTop: '16px' }}>
+                <div className="metadata-item">
+                  <span className="metadata-label">Architecture Summary</span>
+                  <div className="chip-row" style={{ marginTop: '12px' }}>
+                    {architectureSummary.map((item) => (
+                      <span key={item} className="chip">
+                        {item}
+                      </span>
+                    ))}
+                  </div>
+                </div>
+
+                <div className="metadata-item">
+                  <span className="metadata-label">Why This Is More Than A Demo</span>
+                  <div className="chip-row" style={{ marginTop: '12px' }}>
+                    {defenseDepthBullets.map((point) => (
+                      <span key={point} className="chip">
+                        {point}
+                      </span>
+                    ))}
+                  </div>
+                </div>
+              </div>
+
+              <div className="content-grid content-grid--two" style={{ marginTop: '16px' }}>
+                <div className="metadata-item">
+                  <span className="metadata-label">Key Technical Contributions</span>
+                  <ul
+                    style={{
+                      marginTop: '12px',
+                      marginBottom: 0,
+                      paddingLeft: '18px',
+                      color: 'var(--text-secondary)',
+                    }}
+                  >
+                    {technicalContributions.map((item) => (
+                      <li key={item} style={{ marginTop: '8px' }}>
+                        {item}
+                      </li>
+                    ))}
+                  </ul>
+                </div>
+
+                <div className="metadata-item">
+                  <span className="metadata-label">Live Demo Sequence</span>
+                  <ol
+                    style={{
+                      marginTop: '12px',
+                      marginBottom: 0,
+                      paddingLeft: '18px',
+                      color: 'var(--text-secondary)',
+                    }}
+                  >
+                    {liveDemoSequence.map((item) => (
+                      <li key={item} style={{ marginTop: '8px' }}>
+                        {item}
+                      </li>
+                    ))}
+                  </ol>
+                </div>
+              </div>
+
+              <div className="metadata-item" style={{ marginTop: '16px' }}>
+                <span className="metadata-label">Pre-Defense Checklist</span>
+                <div
+                  style={{
+                    marginTop: '12px',
+                    display: 'grid',
+                    gap: '10px',
+                  }}
+                >
+                  {preDefenseChecklist.map((item) => (
+                    <div
+                      key={item.label}
+                      style={{
+                        display: 'flex',
+                        justifyContent: 'space-between',
+                        gap: '12px',
+                        alignItems: 'flex-start',
+                        flexWrap: 'wrap',
+                        paddingBottom: '10px',
+                        borderBottom: '1px solid var(--border-soft)',
+                      }}
+                    >
+                      <div>
+                        <strong className="metadata-value">{item.label}</strong>
+                        <p className="entity-list-meta" style={{ marginTop: '6px' }}>
+                          {item.note}
+                        </p>
+                      </div>
+                      <StatusBadge
+                        label={item.ready ? 'Ready' : 'Check'}
+                        tone={item.ready ? 'success' : 'warning'}
+                      />
+                    </div>
+                  ))}
+                </div>
+              </div>
+
+              <div className="content-grid content-grid--two" style={{ marginTop: '16px' }}>
+                <div className="metadata-item">
+                  <span className="metadata-label">Closing Statement</span>
+                  <p className="entity-list-meta" style={{ marginTop: '12px' }}>
+                    {closingStatement}
+                  </p>
+                </div>
+
+                <div className="metadata-item">
+                  <span className="metadata-label">Fast Navigation</span>
+                  <div className="form-actions" style={{ marginTop: '12px' }}>
+                    <Link
+                      className="button button--ghost"
+                      to="/demo-assistant"
+                      style={{
+                        display: 'inline-flex',
+                        alignItems: 'center',
+                        justifyContent: 'center',
+                        textDecoration: 'none',
+                      }}
+                    >
+                      Open Demo Assistant
+                    </Link>
+                    <Link
+                      className="button button--ghost"
+                      to="/policies"
+                      style={{
+                        display: 'inline-flex',
+                        alignItems: 'center',
+                        justifyContent: 'center',
+                        textDecoration: 'none',
+                      }}
+                    >
+                      Open Policy Center
+                    </Link>
+                    <Link
+                      className="button button--ghost"
+                      to="/flows"
+                      style={{
+                        display: 'inline-flex',
+                        alignItems: 'center',
+                        justifyContent: 'center',
+                        textDecoration: 'none',
+                      }}
+                    >
+                      Open Flows
+                    </Link>
+                  </div>
+                </div>
+              </div>
+            </Panel>
+          ) : null}
+
+          <div className="content-grid content-grid--two">
+            <Panel
+              title="Policy Compliance Summary"
+              description="High-level control-plane posture from the backend Policy Center."
+              className={defenseMode ? 'panel--defense-primary' : undefined}
+              action={
+                <StatusBadge
+                  label={driftCount > 0 ? 'Attention' : 'Aligned'}
+                  tone={driftCount > 0 ? 'danger' : 'success'}
+                />
+              }
+            >
+              {policySummaryQuery.isLoading && !policySummaryQuery.data ? (
+                <LoadingState label="Loading policy compliance summary..." />
+              ) : null}
+
+              {policySummaryQuery.error && !policySummaryQuery.data ? (
+                <div className="notice notice--warning">{policySummaryQuery.error}</div>
+              ) : null}
+
+              {policySummaryQuery.data ? (
+                <>
+                  {policySummaryQuery.error ? (
+                    <div className="notice notice--warning" style={{ marginBottom: '16px' }}>
+                      Showing previously loaded policy summary. Latest refresh failed:{' '}
+                      {policySummaryQuery.error}
+                    </div>
+                  ) : null}
+
+                  <div className="mini-stats">
+                    <div className="mini-stat">
+                      <span>Total policies</span>
+                      <strong>{formatNumber(policySummaryQuery.data.total_policies)}</strong>
+                    </div>
+                    <div className="mini-stat">
+                      <span>Compliant</span>
+                      <strong>{formatNumber(compliantCount)}</strong>
+                    </div>
+                    <div className="mini-stat">
+                      <span>Drift</span>
+                      <strong>{formatNumber(driftCount)}</strong>
+                    </div>
+                    <div className="mini-stat">
+                      <span>Unknown</span>
+                      <strong>{formatNumber(unknownCount)}</strong>
+                    </div>
+                  </div>
+
+                  <div className="metadata-item" style={{ marginTop: '16px' }}>
+                    <span className="metadata-label">Desired Policy State</span>
+                    {desiredEnabledPolicies.length > 0 ? (
+                      <div className="chip-row" style={{ marginTop: '12px' }}>
+                        {desiredEnabledPolicies.map((policy) => (
+                          <span key={policy.id} className="chip">
+                            {policy.name}
+                          </span>
+                        ))}
+                      </div>
+                    ) : (
+                      <p className="entity-list-meta" style={{ marginTop: '12px' }}>
+                        No policies are currently marked as enabled.
+                      </p>
+                    )}
+                  </div>
+                </>
+              ) : null}
+            </Panel>
+
+            <Panel
+              title="Drift Watch"
+              description="Compact closed-loop signal showing whether desired policy state still matches live enforcement."
+              className={defenseMode ? 'panel--defense-primary' : undefined}
+              action={
+                <StatusBadge
+                  label={driftCount > 0 ? 'Attention Required' : 'Aligned'}
+                  tone={driftCount > 0 ? 'danger' : partialCount > 0 ? 'warning' : 'success'}
+                />
+              }
+            >
+              {policyDriftQuery.isLoading && !policyDriftQuery.data ? (
+                <LoadingState label="Loading drift watch..." />
+              ) : null}
+
+              {policyDriftQuery.error && !policyDriftQuery.data ? (
+                <div className="notice notice--warning">{policyDriftQuery.error}</div>
+              ) : null}
+
+              {policyDriftQuery.data ? (
+                <>
+                  {policyDriftQuery.error ? (
+                    <div className="notice notice--warning" style={{ marginBottom: '16px' }}>
+                      Showing previously loaded drift state. Latest refresh failed:{' '}
+                      {policyDriftQuery.error}
+                    </div>
+                  ) : null}
+
+                  <div
+                    className="metadata-item"
+                    style={{
+                      background:
+                        driftCount > 0
+                          ? 'var(--danger-soft)'
+                          : partialCount > 0
+                            ? 'var(--warning-soft)'
+                            : 'var(--success-soft)',
+                    }}
+                  >
+                    <span className="metadata-label">Drift Count</span>
+                    <strong
+                      className="metadata-value"
+                      style={{
+                        marginTop: '12px',
+                        fontSize: '2rem',
+                        lineHeight: 1,
+                      }}
+                    >
+                      {formatNumber(driftCount)}
+                    </strong>
+                    <p className="entity-list-meta" style={{ marginTop: '10px' }}>
+                      {driftHeadline}
+                    </p>
+                  </div>
+
+                  <div className="metadata-item" style={{ marginTop: '16px' }}>
+                    <span className="metadata-label">Drifted Policies</span>
+                    {driftedPolicies.length > 0 ? (
+                      <ul className="entity-list" style={{ marginTop: '12px' }}>
+                        {driftedPolicies.map((policy) => (
+                          <li key={policy.id} className="entity-list-item">
+                            <div>
+                              <div className="entity-list-heading">
+                                <strong>{policy.name}</strong>
+                                <StatusBadge label="Drift" tone="danger" />
+                              </div>
+                              <p className="entity-list-meta">
+                                Desired {formatLabel(policy.desired_state)} · Live{' '}
+                                {formatLabel(policy.live_state)}
+                              </p>
+                            </div>
+                            <span className="entity-list-trailing">
+                              {formatLabel(policy.compliance)}
+                            </span>
+                          </li>
+                        ))}
+                      </ul>
+                    ) : (
+                      <p className="entity-list-meta" style={{ marginTop: '12px' }}>
+                        No drifted policies. The control plane is aligned with live enforcement.
+                      </p>
+                    )}
+                  </div>
+                </>
+              ) : null}
+            </Panel>
+          </div>
+
+          <Panel
+            title="Alert Summary"
+            description="Compact operator signal for active drift, stale state, evidence gaps, and demo hygiene issues."
+            className={defenseMode ? 'panel--defense-primary' : undefined}
+            action={
+              <StatusBadge
+                label={
+                  dashboardAlertSummary.critical_count > 0
+                    ? 'Critical'
+                    : dashboardAlertSummary.warning_count > 0
+                      ? 'Warning'
+                      : 'Stable'
+                }
+                tone={
+                  dashboardAlertSummary.critical_count > 0
+                    ? 'danger'
+                    : dashboardAlertSummary.warning_count > 0
+                      ? 'warning'
+                      : 'success'
+                }
+              />
+            }
+          >
+            <div className="mini-stats">
+              <div className="mini-stat">
+                <span>Active alerts</span>
+                <strong>{formatNumber(dashboardAlertSummary.active_alerts)}</strong>
+              </div>
+              <div className="mini-stat">
+                <span>Critical</span>
+                <strong>{formatNumber(dashboardAlertSummary.critical_count)}</strong>
+              </div>
+              <div className="mini-stat">
+                <span>Warning</span>
+                <strong>{formatNumber(dashboardAlertSummary.warning_count)}</strong>
+              </div>
+              <div className="mini-stat">
+                <span>Info</span>
+                <strong>{formatNumber(dashboardAlertSummary.info_count)}</strong>
+              </div>
+            </div>
+
+            <div
+              className="metadata-item"
+              style={{
+                marginTop: '16px',
+                background:
+                  dashboardAlertSummary.critical_count > 0
+                    ? 'var(--danger-soft)'
+                    : dashboardAlertSummary.warning_count > 0
+                      ? 'var(--warning-soft)'
+                      : 'var(--success-soft)',
+              }}
+            >
+              <span className="metadata-label">Primary Signal</span>
+              <strong className="metadata-value" style={{ marginTop: '12px' }}>
+                {dashboardPrimaryAlert?.title ?? 'No active faults detected'}
+              </strong>
+              <p className="entity-list-meta" style={{ marginTop: '10px' }}>
+                {dashboardPrimaryAlert?.summary ??
+                  'Current Dashboard, Policy Center, switch evidence, and model snapshot signals look aligned.'}
+              </p>
+            </div>
+
+            <div className="content-grid content-grid--two" style={{ marginTop: '16px' }}>
+              <div className="metadata-item">
+                <span className="metadata-label">Top Alerts</span>
+                {topDashboardAlerts.length > 0 ? (
+                  <ul className="entity-list" style={{ marginTop: '12px' }}>
+                    {topDashboardAlerts.map((alert) => (
+                      <li key={alert.id} className="entity-list-item">
+                        <div>
+                          <div className="entity-list-heading">
+                            <strong>{alert.title}</strong>
+                            <StatusBadge
+                              label={alert.severity.toUpperCase()}
+                              tone={getAlertSeverityTone(alert.severity)}
+                            />
+                          </div>
+                          <p className="entity-list-meta">{alert.summary}</p>
+                        </div>
+                      </li>
+                    ))}
+                  </ul>
+                ) : (
+                  <p className="entity-list-meta" style={{ marginTop: '12px' }}>
+                    No active warning or critical alerts are visible in the current snapshot.
+                  </p>
+                )}
+              </div>
+
+              <div className="metadata-item">
+                <span className="metadata-label">Suggested Path</span>
+                <p className="entity-list-meta" style={{ marginTop: '12px' }}>
+                  Use Alert Center for a richer fault view, then move to Policy Center,
+                  Flows, or Demo Assistant based on the suggested action.
+                </p>
+                <div className="form-actions" style={{ marginTop: '12px' }}>
+                  <Link
+                    className="button button--ghost"
+                    to="/alert-center"
+                    style={{
+                      display: 'inline-flex',
+                      alignItems: 'center',
+                      justifyContent: 'center',
+                      textDecoration: 'none',
+                    }}
+                  >
+                    Open Alert Center
+                  </Link>
+                  <Link
+                    className="button button--ghost"
+                    to="/policies"
+                    style={{
+                      display: 'inline-flex',
+                      alignItems: 'center',
+                      justifyContent: 'center',
+                      textDecoration: 'none',
+                    }}
+                  >
+                    Open Policy Center
+                  </Link>
+                  <Link
+                    className="button button--ghost"
+                    to="/flows"
+                    style={{
+                      display: 'inline-flex',
+                      alignItems: 'center',
+                      justifyContent: 'center',
+                      textDecoration: 'none',
+                    }}
+                  >
+                    Open Flows
+                  </Link>
+                </div>
+              </div>
+            </div>
+          </Panel>
+
+          <div className="content-grid content-grid--two">
+            <Panel
+              title="Defense Summary"
+              description="Compact live positioning block for graduation-defense narration."
+              className={defenseMode ? 'panel--defense-primary' : undefined}
+              action={
+                <StatusBadge
+                  label={defenseMode ? 'Defense Mode' : 'Operator View'}
+                  tone={defenseMode ? 'success' : 'neutral'}
+                />
+              }
+            >
+              <div className="metadata-item">
+                <span className="metadata-label">Project Positioning</span>
+                <ul
+                  style={{
+                    marginTop: '12px',
+                    marginBottom: 0,
+                    paddingLeft: '18px',
+                    color: 'var(--text-secondary)',
+                  }}
+                >
+                  {defensePositioningPoints.map((point) => (
+                    <li key={point} style={{ marginTop: '8px' }}>
+                      {point}
+                    </li>
+                  ))}
+                </ul>
+              </div>
+
+              <div className="metadata-item" style={{ marginTop: '16px' }}>
+                <span className="metadata-label">Why This Is More Than A Demo</span>
+                <div className="chip-row" style={{ marginTop: '12px' }}>
+                  {defenseDepthBullets.map((point) => (
+                    <span key={point} className="chip">
+                      {point}
+                    </span>
+                  ))}
+                </div>
+              </div>
+            </Panel>
+
+            <Panel
+              title="Final Scoring Narrative"
+              description="Short on-screen framing for product value, control loop depth, evidence, and recovery."
+              className={defenseMode ? 'panel--defense-primary' : undefined}
+            >
+              <ul className="entity-list" style={{ marginTop: 0 }}>
+                {finalScoringNarrative.map((item) => (
+                  <li key={item.title} className="entity-list-item">
+                    <div>
+                      <div className="entity-list-heading">
+                        <strong>{item.title}</strong>
+                      </div>
+                      <p className="entity-list-meta">{item.detail}</p>
+                    </div>
+                    <StatusBadge
+                      label={
+                        item.title === 'Recovery / Safety'
+                          ? isBaselineActive
+                            ? 'Safe'
+                            : 'Available'
+                          : 'Live'
+                      }
+                      tone={
+                        item.title === 'Recovery / Safety'
+                          ? 'success'
+                          : defenseMode
+                            ? 'success'
+                            : 'neutral'
+                      }
+                    />
+                  </li>
+                ))}
+              </ul>
+            </Panel>
+          </div>
+
+          <div className="content-grid content-grid--two">
+            <Panel
+              title="Quick Policy Actions"
+              description="Safe operator actions for refreshing state and validating policy compliance without changing the active demo path."
+              className={defenseMode ? 'panel--defense-primary' : undefined}
+              action={
+                <StatusBadge
+                  label={dashboardPolicyActionLoading ? 'Working' : 'Ready'}
+                  tone={dashboardPolicyActionLoading ? 'warning' : 'neutral'}
+                />
+              }
+            >
+              <div className="form-actions">
+                <button
+                  className="button button--ghost"
+                  type="button"
+                  disabled={isPolicyBusy}
+                  onClick={() => void handleRefreshPolicyState()}
+                >
+                  {dashboardPolicyActionLoading === 'Refresh Policy State'
+                    ? 'Running...'
+                    : 'Refresh Policy State'}
+                </button>
+                <button
+                  className="button"
+                  type="button"
+                  disabled={isPolicyBusy}
+                  onClick={() => void handleVerifyKeyPolicies()}
+                >
+                  {dashboardPolicyActionLoading === 'Verify Key Policies'
+                    ? 'Running...'
+                    : 'Verify Key Policies'}
+                </button>
+                <Link
+                  className="button button--secondary"
+                  to="/policies"
+                  style={{
+                    display: 'inline-flex',
+                    alignItems: 'center',
+                    justifyContent: 'center',
+                    textDecoration: 'none',
+                  }}
+                >
+                  Open Policy Center
+                </Link>
+              </div>
+
+              {dashboardPolicyActionError ? (
+                <div className="notice notice--warning" style={{ marginTop: '16px' }}>
+                  {dashboardPolicyActionError}
+                </div>
+              ) : null}
+
+              {dashboardPolicyActionMessage ? (
+                <div className="metadata-item" style={{ marginTop: '16px' }}>
+                  <span className="metadata-label">Operator Note</span>
+                  <strong className="metadata-value" style={{ marginTop: '12px' }}>
+                    {dashboardPolicyActionMessage}
+                  </strong>
+                </div>
+              ) : null}
+            </Panel>
+
+            <Panel
+              title="Control Loop Narrative"
+              description="Live SDN-management story points for defense: desired state, enforcement evidence, compliance, and recovery."
+              className={defenseMode ? 'panel--defense-primary' : undefined}
+            >
+              <div className="metadata-grid" style={{ gridTemplateColumns: 'repeat(2, minmax(0, 1fr))' }}>
+                <div className="metadata-item">
+                  <span className="metadata-label">Desired State</span>
+                  <strong className="metadata-value">
+                    {formatNumber(desiredEnabledPolicies.length)} enabled policy
+                    {desiredEnabledPolicies.length === 1 ? ' object' : ' objects'}
+                  </strong>
+                  <p className="entity-list-meta" style={{ marginTop: '10px' }}>
+                    Backend policy intent is tracked as desired state in Policy Center.
+                  </p>
+                </div>
+                <div className="metadata-item">
+                  <span className="metadata-label">Enforcement Evidence</span>
+                  <strong className="metadata-value">
+                    {formatNumber(ovsPolicyFlows.length)} policy flow
+                    {ovsPolicyFlows.length === 1 ? '' : 's'} / {formatNumber(ovsBaseFlowCount)} base
+                  </strong>
+                  <p className="entity-list-meta" style={{ marginTop: '10px' }}>
+                    Live OVS evidence is read directly from the switch to validate enforcement.
+                  </p>
+                </div>
+                <div className="metadata-item">
+                  <span className="metadata-label">Compliance Result</span>
+                  <strong className="metadata-value">
+                    {formatNumber(compliantCount)} compliant, {formatNumber(driftCount)} drift,{' '}
+                    {formatNumber(partialCount)} partial
+                  </strong>
+                  <p className="entity-list-meta" style={{ marginTop: '10px' }}>
+                    Drift detection closes the loop between desired policy state and live flows.
+                  </p>
+                </div>
+                <div className="metadata-item">
+                  <span className="metadata-label">Recovery Path</span>
+                  <strong className="metadata-value">
+                    {isBaselineActive ? 'Baseline Ready' : 'Rollback Available'}
+                  </strong>
+                  <p className="entity-list-meta" style={{ marginTop: '10px' }}>
+                    {recoveryNarrative}
+                  </p>
+                </div>
+              </div>
+            </Panel>
+          </div>
+
+          <Panel
+            title="Recent Policy Events"
+            description="Backend policy activity feed for recent verification, rollback, and enforcement actions."
+          >
+            {policyEventsQuery.isLoading && !policyEventsQuery.data ? (
+              <LoadingState label="Loading recent policy events..." />
+            ) : null}
+
+            {policyEventsQuery.error && !policyEventsQuery.data ? (
+              <div className="notice notice--warning">{policyEventsQuery.error}</div>
+            ) : null}
+
+            {policyEventsQuery.data ? (
+              <>
+                {policyEventsQuery.error ? (
+                  <div className="notice notice--warning" style={{ marginBottom: '16px' }}>
+                    Showing previously loaded policy events. Latest refresh failed:{' '}
+                    {policyEventsQuery.error}
+                  </div>
+                ) : null}
+
+                {recentPolicyEvents.length === 0 ? (
+                  <p className="entity-list-meta">No backend policy events recorded yet.</p>
+                ) : (
+                  <ul className="entity-list" style={{ marginTop: 0 }}>
+                    {recentPolicyEvents.map((event) => (
+                      <li key={event.id} className="entity-list-item">
+                        <div>
+                          <div className="entity-list-heading">
+                            <strong>{formatLabel(event.action)}</strong>
+                            <StatusBadge
+                              label={formatLabel(event.compliance)}
+                              tone={getComplianceTone(event.compliance)}
+                            />
+                            <StatusBadge
+                              label={formatLabel(event.result)}
+                              tone={getResultTone(event.result)}
+                            />
+                          </div>
+                          <p className="entity-list-meta">
+                            {event.policy_name} · {event.message}
+                          </p>
+                        </div>
+                        <span className="entity-list-trailing">
+                          {formatDateTime(event.timestamp)}
+                        </span>
+                      </li>
+                    ))}
+                  </ul>
+                )}
+              </>
+            ) : null}
+          </Panel>
 
           <Panel
             title="Policy Control"
