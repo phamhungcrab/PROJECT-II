@@ -42,17 +42,22 @@
 }
 
 html {
+  height: 100%;
   min-height: 100%;
+  overflow: hidden;
 }
 
 body {
   margin: 0;
+  height: 100%;
   min-height: 100vh;
+  min-height: 100dvh;
   background:
     radial-gradient(circle at right top, rgba(15, 118, 110, 0.12), transparent 26%),
     radial-gradient(circle at left 15% top 18%, rgba(15, 23, 42, 0.08), transparent 24%),
     linear-gradient(180deg, #edf4fa 0%, #f7fafc 48%, #eef4fa 100%);
   color: var(--text-primary);
+  overflow: hidden;
 }
 
 body::before {
@@ -86,7 +91,9 @@ p {
 }
 
 #root {
+  height: 100%;
   min-height: 100vh;
+  min-height: 100dvh;
 }
 
 .mono {
@@ -94,29 +101,36 @@ p {
 }
 
 .app-shell {
+  height: 100vh;
+  height: 100dvh;
   min-height: 100vh;
+  min-height: 100dvh;
   display: grid;
   grid-template-columns: 300px minmax(0, 1fr);
+  overflow: hidden;
 }
 
 .sidebar {
-  position: sticky;
-  top: 0;
-  align-self: start;
-  min-height: 100vh;
-  padding: 32px 24px;
+  height: 100vh;
+  height: 100dvh;
+  min-height: 0;
+  padding: 28px 20px 22px 24px;
   background:
     linear-gradient(180deg, rgba(255, 255, 255, 0.04), transparent 18%),
     var(--bg-sidebar);
   color: #e2edf6;
   border-right: 1px solid rgba(159, 179, 198, 0.12);
+  display: flex;
+  flex-direction: column;
+  gap: 18px;
+  overflow: hidden;
 }
 
 .brand-block {
   display: flex;
   gap: 16px;
   align-items: center;
-  margin-bottom: 32px;
+  padding: 0 4px 2px 0;
 }
 
 .brand-mark {
@@ -145,55 +159,131 @@ p {
   font-size: 0.95rem;
 }
 
+.sidebar-scroll-region {
+  min-height: 0;
+  flex: 1;
+  overflow-y: auto;
+  overscroll-behavior: contain;
+  scrollbar-gutter: stable both-edges;
+  padding: 8px 8px 8px 0;
+  margin-right: -8px;
+  border-top: 1px solid rgba(159, 179, 198, 0.1);
+  border-bottom: 1px solid rgba(159, 179, 198, 0.08);
+  -webkit-overflow-scrolling: touch;
+  scrollbar-color: rgba(159, 179, 198, 0.32) transparent;
+}
+
+.sidebar-scroll-region:focus-visible {
+  outline: 2px solid rgba(45, 212, 191, 0.52);
+  outline-offset: 2px;
+  border-radius: 20px;
+}
+
+.sidebar-scroll-region::-webkit-scrollbar,
+.main-shell::-webkit-scrollbar,
+.sidebar-nav::-webkit-scrollbar {
+  width: 10px;
+  height: 10px;
+}
+
+.sidebar-scroll-region::-webkit-scrollbar-track,
+.main-shell::-webkit-scrollbar-track,
+.sidebar-nav::-webkit-scrollbar-track {
+  background: transparent;
+}
+
+.sidebar-scroll-region::-webkit-scrollbar-thumb,
+.main-shell::-webkit-scrollbar-thumb,
+.sidebar-nav::-webkit-scrollbar-thumb {
+  border-radius: 999px;
+  border: 2px solid transparent;
+  background-clip: padding-box;
+}
+
+.sidebar-scroll-region::-webkit-scrollbar-thumb {
+  background-color: rgba(159, 179, 198, 0.34);
+}
+
+.main-shell::-webkit-scrollbar-thumb,
+.sidebar-nav::-webkit-scrollbar-thumb {
+  background-color: rgba(113, 133, 155, 0.26);
+}
+
+.sidebar-scroll-region:hover::-webkit-scrollbar-thumb,
+.sidebar-scroll-region:focus-visible::-webkit-scrollbar-thumb {
+  background-color: rgba(159, 179, 198, 0.5);
+}
+
+.main-shell:hover::-webkit-scrollbar-thumb {
+  background-color: rgba(113, 133, 155, 0.36);
+}
+
 .sidebar-nav {
   display: grid;
-  gap: 12px;
+  gap: 10px;
+  min-height: 0;
+  padding: 14px 0 18px;
 }
 
 .nav-link {
   display: block;
-  padding: 16px 18px;
-  border-radius: 18px;
+  padding: 15px 18px;
+  border-radius: 20px;
   text-decoration: none;
-  background: transparent;
+  background: linear-gradient(180deg, rgba(255, 255, 255, 0.02), rgba(255, 255, 255, 0));
   border: 1px solid rgba(159, 179, 198, 0.08);
   transition:
     transform 180ms ease,
     border-color 180ms ease,
-    background 180ms ease;
+    background 180ms ease,
+    box-shadow 180ms ease;
 }
 
 .nav-link:hover {
   transform: translateY(-1px);
-  border-color: rgba(159, 179, 198, 0.22);
-  background: rgba(159, 179, 198, 0.08);
+  border-color: rgba(159, 179, 198, 0.24);
+  background: rgba(159, 179, 198, 0.1);
+  box-shadow: 0 12px 24px rgba(2, 6, 23, 0.12);
+}
+
+.nav-link:focus-visible {
+  outline: 2px solid rgba(45, 212, 191, 0.5);
+  outline-offset: 2px;
 }
 
 .nav-link--active {
-  background: linear-gradient(180deg, rgba(15, 118, 110, 0.18), rgba(15, 118, 110, 0.08));
-  border-color: rgba(45, 212, 191, 0.26);
-  box-shadow: inset 0 0 0 1px rgba(15, 118, 110, 0.12);
+  background:
+    linear-gradient(180deg, rgba(15, 118, 110, 0.24), rgba(15, 118, 110, 0.08)),
+    rgba(255, 255, 255, 0.04);
+  border-color: rgba(94, 234, 212, 0.32);
+  box-shadow:
+    inset 0 0 0 1px rgba(15, 118, 110, 0.16),
+    0 16px 30px rgba(2, 6, 23, 0.16);
 }
 
 .nav-link-label {
   display: block;
   font-weight: 600;
   color: #f5fbff;
+  letter-spacing: -0.01em;
 }
 
 .nav-link-description {
   display: block;
-  margin-top: 6px;
+  margin-top: 5px;
   font-size: 0.92rem;
   color: rgba(216, 231, 243, 0.7);
 }
 
 .sidebar-footer {
-  margin-top: 28px;
+  flex-shrink: 0;
   padding: 18px;
   border-radius: 18px;
-  background: var(--bg-sidebar-muted);
-  border: 1px solid rgba(159, 179, 198, 0.12);
+  background:
+    linear-gradient(180deg, rgba(255, 255, 255, 0.08), rgba(159, 179, 198, 0.12)),
+    var(--bg-sidebar-muted);
+  border: 1px solid rgba(159, 179, 198, 0.18);
+  box-shadow: inset 0 1px 0 rgba(255, 255, 255, 0.06);
 }
 
 .sidebar-footer-label {
@@ -215,13 +305,20 @@ p {
   display: flex;
   flex-direction: column;
   min-width: 0;
+  min-height: 0;
+  overflow-y: auto;
+  overscroll-behavior-y: contain;
+  scrollbar-gutter: stable both-edges;
+  -webkit-overflow-scrolling: touch;
+  scrollbar-color: rgba(113, 133, 155, 0.32) transparent;
 }
 
 .topbar {
   display: flex;
   justify-content: space-between;
   gap: 24px;
-  padding: 36px 40px 22px;
+  flex-shrink: 0;
+  padding: 30px 40px 18px;
 }
 
 .topbar h1 {
@@ -250,6 +347,7 @@ p {
   display: grid;
   gap: 12px;
   min-width: 260px;
+  align-self: start;
 }
 
 .meta-card {
@@ -284,6 +382,8 @@ p {
 
 .content-shell {
   flex: 1;
+  min-width: 0;
+  min-height: 0;
   padding: 0 40px 40px;
 }
 
@@ -321,6 +421,8 @@ p {
 .page {
   display: grid;
   gap: 24px;
+  min-width: 0;
+  align-content: start;
 }
 
 .hero-banner,
@@ -344,6 +446,18 @@ p {
   border: 1px solid var(--border-soft);
   backdrop-filter: blur(14px);
   box-shadow: var(--shadow-lg);
+}
+
+.hero-banner,
+.page-toolbar,
+.panel,
+.metadata-item,
+.meta-card,
+.mini-stat,
+.stat-card,
+.metric-bar-card,
+.model-context-card {
+  min-width: 0;
 }
 
 .hero-title,
@@ -666,6 +780,8 @@ p {
 .table-shell {
   margin-top: 18px;
   overflow-x: auto;
+  overscroll-behavior-x: contain;
+  scrollbar-gutter: stable both-edges;
   border-radius: 18px;
   border: 1px solid rgba(150, 169, 188, 0.16);
 }
@@ -1102,21 +1218,50 @@ p {
 }
 
 @media (max-width: 1080px) {
+  html,
+  body {
+    overflow: auto;
+  }
+
   .app-shell {
+    height: auto;
+    min-height: 100vh;
+    min-height: 100dvh;
     grid-template-columns: 1fr;
+    overflow: visible;
   }
 
   .sidebar {
     position: static;
+    height: auto;
     min-height: auto;
+    overflow: visible;
+    gap: 14px;
+    padding: 24px 20px 18px;
     border-right: none;
     border-bottom: 1px solid rgba(159, 179, 198, 0.12);
+  }
+
+  .sidebar-scroll-region {
+    overflow: visible;
+    overscroll-behavior: auto;
+    scrollbar-gutter: auto;
+    margin-right: 0;
+    padding: 0;
+    border: none;
+  }
+
+  .main-shell {
+    overflow: visible;
+    scrollbar-gutter: auto;
   }
 
   .sidebar-nav {
     display: flex;
     overflow-x: auto;
-    padding-bottom: 4px;
+    overflow-y: hidden;
+    padding: 0 0 4px;
+    scrollbar-gutter: stable;
   }
 
   .nav-link {
@@ -1124,7 +1269,7 @@ p {
   }
 
   .topbar {
-    padding-top: 28px;
+    padding-top: 24px;
   }
 }
 
