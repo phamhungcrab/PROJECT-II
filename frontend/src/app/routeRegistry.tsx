@@ -6,6 +6,7 @@ import { FlowsPage } from '../pages/FlowsPage'
 import { InventoryPage } from '../pages/InventoryPage'
 import { MetricsCenterPage } from '../pages/MetricsCenterPage'
 import { ModelViewerPage } from '../pages/ModelViewerPage'
+import { OperationsTimelinePage } from '../pages/OperationsTimelinePage'
 import { PolicyCenterPage } from '../pages/PolicyCenterPage'
 import { TopologyPage } from '../pages/TopologyPage'
 
@@ -37,6 +38,13 @@ export const appRoutes: AppRouteDefinition[] = [
     label: 'Metrics Center',
     description: 'Evaluation metrics, evidence coverage, and readiness snapshot.',
     element: <MetricsCenterPage />,
+  },
+  {
+    path: '/operations-timeline',
+    label: 'Operations Timeline',
+    description:
+      'Chronological audit replay for policy events, evidence, drift, alerts, and recovery context.',
+    element: <OperationsTimelinePage />,
   },
   {
     path: '/demo-assistant',

@@ -677,6 +677,18 @@ export function DashboardPage() {
           >
             Open Metrics Center
           </Link>
+          <Link
+            className="button button--ghost"
+            to="/operations-timeline"
+            style={{
+              display: 'inline-flex',
+              alignItems: 'center',
+              justifyContent: 'center',
+              textDecoration: 'none',
+            }}
+          >
+            Open Operations Timeline
+          </Link>
           <button className="button" type="button" onClick={reload} disabled={isLoading}>
             Refresh dashboard
           </button>
