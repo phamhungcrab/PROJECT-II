@@ -1,5 +1,6 @@
 import { useEffect, useState } from 'react'
 import { Link } from 'react-router-dom'
+import { useDefenseMode } from '../app/defenseMode'
 import { ErrorState } from '../components/state/ErrorState'
 import { LoadingState } from '../components/state/LoadingState'
 import { Panel } from '../components/ui/Panel'
@@ -90,6 +91,7 @@ function getResultTone(result: string) {
 }
 
 export function DashboardPage() {
+  const { defenseMode } = useDefenseMode()
   const [policyLoadingAction, setPolicyLoadingAction] = useState<string | null>(null)
   const [policyError, setPolicyError] = useState<string | null>(null)
   const [policyResult, setPolicyResult] = useState<string | null>(null)
@@ -196,6 +198,53 @@ export function DashboardPage() {
       : isBaselineActive
         ? 'Baseline forwarding is already active and recovery remains available.'
         : 'Rollback and baseline recovery paths are available from the operator console.'
+  const defensePositioningPoints = [
+    `SDN management platform with ${formatNumber(
+      policySummaryQuery.data?.total_policies ?? 0,
+    )} tracked policy objects and live control actions.`,
+    `Policy lifecycle is visible from desired state to apply, verify, rollback, and recovery.`,
+    `Live enforcement evidence currently shows ${formatNumber(
+      ovsPolicyFlows.length,
+    )} policy flows and ${formatNumber(ovsBaseFlowCount)} base flows on OVS.`,
+    `Drift detection is active with ${formatNumber(driftCount)} drift and ${formatNumber(
+      partialCount,
+    )} partial policies in the current snapshot.`,
+    `Recovery remains explicit through rollback paths and baseline restoration.`,
+  ]
+  const defenseDepthBullets = [
+    'This is not only topology observation; the operator can change live policy state.',
+    'Policy intent, switch evidence, and compliance are visible in the same console.',
+    'Recent events and verification history create an auditable control loop.',
+    'Recovery is designed into the workflow instead of being an afterthought.',
+  ]
+  const finalScoringNarrative = [
+    {
+      title: 'Product Depth',
+      detail: `${formatNumber(
+        policySummaryQuery.data?.total_policies ?? 0,
+      )} policy objects, Dashboard controls, and Policy Center workflows show a usable operator product surface.`,
+    },
+    {
+      title: 'Live Enforcement',
+      detail: `${formatNumber(ovsPolicyFlows.length)} policy flows and ${formatNumber(
+        ovsBaseFlowCount,
+      )} base flows are read from OVS to prove switch-side state.`,
+    },
+    {
+      title: 'Closed-loop Verification',
+      detail: `${formatNumber(compliantCount)} compliant, ${formatNumber(
+        driftCount,
+      )} drift, and ${formatNumber(partialCount)} partial policies show that intent is being checked against live enforcement.`,
+    },
+    {
+      title: 'Evidence-driven Operations',
+      detail: `${formatNumber(recentPolicyEvents.length)} recent policy events and live OVS evidence give the operator a concrete audit trail during demo and review.`,
+    },
+    {
+      title: 'Recovery / Safety',
+      detail: recoveryNarrative,
+    },
+  ]
 
   function appendOperationLog(action: string, result: OperationLogEntry['result']) {
     setOperationLogs((current) =>
@@ -573,6 +622,7 @@ export function DashboardPage() {
             <Panel
               title="Policy Compliance Summary"
               description="High-level control-plane posture from the backend Policy Center."
+              className={defenseMode ? 'panel--defense-primary' : undefined}
               action={
                 <StatusBadge
                   label={driftCount > 0 ? 'Attention' : 'Aligned'}
@@ -639,6 +689,7 @@ export function DashboardPage() {
             <Panel
               title="Drift Watch"
               description="Compact closed-loop signal showing whether desired policy state still matches live enforcement."
+              className={defenseMode ? 'panel--defense-primary' : undefined}
               action={
                 <StatusBadge
                   label={driftCount > 0 ? 'Attention Required' : 'Aligned'}
@@ -725,8 +776,87 @@ export function DashboardPage() {
 
           <div className="content-grid content-grid--two">
             <Panel
+              title="Defense Summary"
+              description="Compact live positioning block for graduation-defense narration."
+              className={defenseMode ? 'panel--defense-primary' : undefined}
+              action={
+                <StatusBadge
+                  label={defenseMode ? 'Defense Mode' : 'Operator View'}
+                  tone={defenseMode ? 'success' : 'neutral'}
+                />
+              }
+            >
+              <div className="metadata-item">
+                <span className="metadata-label">Project Positioning</span>
+                <ul
+                  style={{
+                    marginTop: '12px',
+                    marginBottom: 0,
+                    paddingLeft: '18px',
+                    color: 'var(--text-secondary)',
+                  }}
+                >
+                  {defensePositioningPoints.map((point) => (
+                    <li key={point} style={{ marginTop: '8px' }}>
+                      {point}
+                    </li>
+                  ))}
+                </ul>
+              </div>
+
+              <div className="metadata-item" style={{ marginTop: '16px' }}>
+                <span className="metadata-label">Why This Is More Than A Demo</span>
+                <div className="chip-row" style={{ marginTop: '12px' }}>
+                  {defenseDepthBullets.map((point) => (
+                    <span key={point} className="chip">
+                      {point}
+                    </span>
+                  ))}
+                </div>
+              </div>
+            </Panel>
+
+            <Panel
+              title="Final Scoring Narrative"
+              description="Short on-screen framing for product value, control loop depth, evidence, and recovery."
+              className={defenseMode ? 'panel--defense-primary' : undefined}
+            >
+              <ul className="entity-list" style={{ marginTop: 0 }}>
+                {finalScoringNarrative.map((item) => (
+                  <li key={item.title} className="entity-list-item">
+                    <div>
+                      <div className="entity-list-heading">
+                        <strong>{item.title}</strong>
+                      </div>
+                      <p className="entity-list-meta">{item.detail}</p>
+                    </div>
+                    <StatusBadge
+                      label={
+                        item.title === 'Recovery / Safety'
+                          ? isBaselineActive
+                            ? 'Safe'
+                            : 'Available'
+                          : 'Live'
+                      }
+                      tone={
+                        item.title === 'Recovery / Safety'
+                          ? 'success'
+                          : defenseMode
+                            ? 'success'
+                            : 'neutral'
+                      }
+                    />
+                  </li>
+                ))}
+              </ul>
+            </Panel>
+          </div>
+
+          <div className="content-grid content-grid--two">
+            <Panel
               title="Quick Policy Actions"
               description="Safe operator actions for refreshing state and validating policy compliance without changing the active demo path."
+              className={defenseMode ? 'panel--defense-primary' : undefined}
               action={
                 <StatusBadge
                   label={dashboardPolicyActionLoading ? 'Working' : 'Ready'}
@@ -788,6 +918,7 @@ export function DashboardPage() {
             <Panel
               title="Control Loop Narrative"
               description="Live SDN-management story points for defense: desired state, enforcement evidence, compliance, and recovery."
+              className={defenseMode ? 'panel--defense-primary' : undefined}
             >
               <div className="metadata-grid" style={{ gridTemplateColumns: 'repeat(2, minmax(0, 1fr))' }}>
                 <div className="metadata-item">

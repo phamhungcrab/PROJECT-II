@@ -1,5 +1,6 @@
 import { useEffect, useState } from 'react'
 import { Link } from 'react-router-dom'
+import { useDefenseMode } from '../app/defenseMode'
 import { EmptyState } from '../components/state/EmptyState'
 import { ErrorState } from '../components/state/ErrorState'
 import { LoadingState } from '../components/state/LoadingState'
@@ -364,6 +365,7 @@ function hasExpectedEvidence(
 }
 
 export function DemoAssistantPage() {
+  const { defenseMode } = useDefenseMode()
   const [selectedScenarioId, setSelectedScenarioId] = useState<DemoScenarioId>('baseline')
   const [selectedPolicy, setSelectedPolicy] = useState<PolicyRecord | null>(null)
   const [policyPreview, setPolicyPreview] = useState<PolicyPreview | null>(null)
@@ -418,6 +420,26 @@ export function DemoAssistantPage() {
     selectedScenarioStatus.label === 'Attention' ||
     selectedPolicy?.compliance === 'DRIFT' ||
     selectedPolicy?.live_state === 'PARTIAL'
+  const defenseTalkingPoints = [
+    `The operator controls ${formatNumber(
+      summaryQuery.data?.total_policies ?? policyList.length,
+    )} policy objects from desired state to rollback.`,
+    `Live verification is based on ${formatNumber(
+      latestEvidence?.flow_count ?? 0,
+    )} compact evidence flows captured from OVS for this scenario.`,
+    `Drift means policy intent and live switch enforcement no longer match.`,
+    `Evidence proves that enforcement is present on the switch, not only in the dashboard.`,
+    `Recovery works through explicit rollback or Recover Baseline when the demo needs a clean reset.`,
+  ]
+  const recommendedDefenseFlow = [
+    'Start with Baseline and confirm the lab is aligned.',
+    'Run Ping Block Demo and verify the policy state.',
+    'Open Policy Center and point at compliance plus evidence summary.',
+    'Open Flows page and show the matching policy flow labels/cookies.',
+    'Recover Baseline before moving to the next restrictive scenario.',
+    'Run HTTP Block Demo or Host Isolation Demo depending on time.',
+    'Close by pointing to drift watch, evidence, and recovery readiness.',
+  ]
 
   async function loadScenarioWorkspace(policyId: string) {
     setIsDetailLoading(true)
@@ -576,6 +598,7 @@ export function DemoAssistantPage() {
             <Panel
               title="Scenario Inventory"
               description="Choose a defense scenario and track whether the live switch state matches the intended demo story."
+              className={defenseMode ? 'panel--defense-primary' : undefined}
               action={
                 <span className="cell-muted">
                   {formatNumber(activeScenarioCount)} active /{' '}
@@ -644,6 +667,7 @@ export function DemoAssistantPage() {
               <Panel
                 title={selectedScenario.title}
                 description={selectedScenario.objective}
+                className={defenseMode ? 'panel--defense-primary' : undefined}
                 action={
                   <StatusBadge
                     label={selectedScenarioStatus.label}
@@ -1035,6 +1059,7 @@ export function DemoAssistantPage() {
               <Panel
                 title="Speaker Assist"
                 description="Short speaking cues for the selected scenario so the operator can narrate state, evidence, drift, and recovery without leaving the screen."
+                className={defenseMode ? 'panel--defense-primary' : undefined}
               >
                 {selectedPolicy ? (
                   <>
@@ -1101,6 +1126,24 @@ export function DemoAssistantPage() {
                         .
                       </p>
                     </div>
+
+                    <div className="metadata-item" style={{ marginTop: '16px' }}>
+                      <span className="metadata-label">Key Talking Points</span>
+                      <ul
+                        style={{
+                          marginTop: '12px',
+                          marginBottom: 0,
+                          paddingLeft: '18px',
+                          color: 'var(--text-secondary)',
+                        }}
+                      >
+                        {defenseTalkingPoints.map((point) => (
+                          <li key={point} style={{ marginTop: '8px' }}>
+                            {point}
+                          </li>
+                        ))}
+                      </ul>
+                    </div>
                   </>
                 ) : (
                   <EmptyState
@@ -1108,6 +1151,47 @@ export function DemoAssistantPage() {
                     description="Choose a scenario to load live speaker notes and operator cues."
                   />
                 )}
+              </Panel>
+
+              <Panel
+                title="Recommended Defense Flow"
+                description="Display-only guidance for a clean graduation-defense sequence."
+                className={defenseMode ? 'panel--defense-primary' : undefined}
+                action={
+                  <StatusBadge
+                    label={defenseMode ? 'Presenter Flow' : 'Guide'}
+                    tone={defenseMode ? 'success' : 'neutral'}
+                  />
+                }
+              >
+                <div className="metadata-item">
+                  <span className="metadata-label">Demo Sequence Helper</span>
+                  <ol
+                    style={{
+                      marginTop: '12px',
+                      marginBottom: 0,
+                      paddingLeft: '18px',
+                      color: 'var(--text-secondary)',
+                    }}
+                  >
+                    {recommendedDefenseFlow.map((step) => (
+                      <li key={step} style={{ marginTop: '8px' }}>
+                        {step}
+                      </li>
+                    ))}
+                  </ol>
+                </div>
+
+                <div className="metadata-item" style={{ marginTop: '16px' }}>
+                  <span className="metadata-label">Final Scoring Narrative</span>
+                  <div className="chip-row" style={{ marginTop: '12px' }}>
+                    <span className="chip">Product depth through policy lifecycle</span>
+                    <span className="chip">Live enforcement proven on OVS</span>
+                    <span className="chip">Closed-loop verification with drift watch</span>
+                    <span className="chip">Evidence-driven operations and event history</span>
+                    <span className="chip">Safe recovery through rollback and baseline</span>
+                  </div>
+                </div>
               </Panel>
             </div>
           </div>
