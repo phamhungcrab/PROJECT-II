@@ -1,6 +1,6 @@
 from fastapi import APIRouter, HTTPException
 
-from app.models.policy_center import PolicyDesiredState
+from app.models.policy_center import PolicyDesiredState, PolicyTemplateRequest
 from app.services.ovs_flow_service import OVSFlowService
 from app.services.policy_center_service import get_policy_center_service
 
@@ -14,6 +14,14 @@ def _raise_not_found(exc: KeyError) -> None:
 
 def _raise_server_error(exc: RuntimeError) -> None:
     raise HTTPException(status_code=500, detail=str(exc)) from exc
+
+
+def _raise_bad_request(exc: ValueError) -> None:
+    raise HTTPException(status_code=400, detail=str(exc)) from exc
+
+
+def _raise_conflict(exc: ValueError) -> None:
+    raise HTTPException(status_code=409, detail=str(exc)) from exc
 
 
 @router.get("")
@@ -224,6 +232,28 @@ def get_demo_block_ping_policy_status() -> dict[str, object]:
         _raise_server_error(exc)
 
 
+@router.post("/templates/preview")
+def preview_policy_template(template: PolicyTemplateRequest) -> object:
+    try:
+        service = get_policy_center_service()
+        return service.preview_template(template)
+    except ValueError as exc:
+        _raise_bad_request(exc)
+    except RuntimeError as exc:
+        _raise_server_error(exc)
+
+
+@router.post("/templates")
+def create_policy_template(template: PolicyTemplateRequest) -> object:
+    try:
+        service = get_policy_center_service()
+        return service.create_policy_from_template(template)
+    except ValueError as exc:
+        _raise_bad_request(exc)
+    except RuntimeError as exc:
+        _raise_server_error(exc)
+
+
 @router.get("/{policy_id}/evidence")
 def get_policy_evidence(policy_id: str) -> dict[str, object]:
     try:
@@ -285,6 +315,8 @@ def apply_policy(policy_id: str) -> dict[str, object]:
         return service.apply_policy(policy_id)
     except KeyError as exc:
         _raise_not_found(exc)
+    except ValueError as exc:
+        _raise_conflict(exc)
     except RuntimeError as exc:
         _raise_server_error(exc)
 
@@ -296,6 +328,8 @@ def rollback_policy(policy_id: str) -> dict[str, object]:
         return service.rollback_policy(policy_id)
     except KeyError as exc:
         _raise_not_found(exc)
+    except ValueError as exc:
+        _raise_conflict(exc)
     except RuntimeError as exc:
         _raise_server_error(exc)
 
@@ -307,5 +341,7 @@ def verify_policy(policy_id: str) -> dict[str, object]:
         return service.verify_policy(policy_id)
     except KeyError as exc:
         _raise_not_found(exc)
+    except ValueError as exc:
+        _raise_conflict(exc)
     except RuntimeError as exc:
         _raise_server_error(exc)

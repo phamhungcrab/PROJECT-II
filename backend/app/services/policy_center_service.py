@@ -1,6 +1,7 @@
 from __future__ import annotations
 
 import json
+import re
 from datetime import datetime, timezone
 from functools import lru_cache
 from pathlib import Path
@@ -13,9 +14,13 @@ from app.models.policy_center import (
     PolicyCompliance,
     PolicyDesiredState,
     PolicyEvidenceRecord,
+    PolicyExecutionStatus,
     PolicyEventRecord,
     PolicyLiveState,
+    PolicyOrigin,
     PolicyPreview,
+    PolicyTemplateCreateResponse,
+    PolicyTemplateRequest,
     PolicyRecord,
 )
 from app.services.ovs_flow_service import OVSFlowService
@@ -113,6 +118,18 @@ POLICY_DEFINITIONS: dict[str, dict[str, object]] = {
     },
 }
 
+POLICY_FLOW_LABELS: dict[str, tuple[str, ...]] = {
+    "baseline_forwarding": ("Base Forwarding",),
+    "block_ping_h1_h2": ("Block Ping A->B", "Block Ping B->A"),
+    "block_http_h1_h2": ("Block HTTP A->B", "Block HTTP B->A"),
+    "isolate_h1": ("Isolate H1 A->B", "Isolate H1 B->A"),
+}
+
+DEMO_HOSTS: dict[str, dict[str, str]] = {
+    "h1": {"label": "H1", "ip": "10.0.0.1"},
+    "h2": {"label": "H2", "ip": "10.0.0.2"},
+}
+
 
 def _model_to_dict(model: BaseModel) -> dict[str, object]:
     if hasattr(model, "model_dump"):
@@ -150,22 +167,90 @@ class PolicyCenterService:
 
     def preview_policy(self, policy_id: str) -> PolicyPreview:
         policy = self.get_policy(policy_id)
-        definition = self._get_definition(policy_id)
-        return PolicyPreview(
-            policy=policy,
-            mapped_enforcement_action=str(definition["mapped_enforcement_action"]),
-            affected_target=policy.target,
-            expected_impact=str(definition["expected_impact"]),
-            notes=[str(note) for note in definition["notes"]],
-            risk=str(definition["risk"]),
+        definition = self._definition_for_policy(policy)
+        return self._build_preview(policy, definition)
+
+    def preview_template(self, template: PolicyTemplateRequest) -> PolicyPreview:
+        normalized = self._normalize_template_request(template)
+        policy = self._build_template_policy(
+            normalized,
+            policy_id=self._build_template_id(str(normalized["name"])),
+            timestamp=self._now_iso(),
         )
+        policy = self._refresh_policies_from_live([policy], strict=False)[0]
+        definition = self._definition_for_policy(policy)
+        return self._build_preview(policy, definition)
+
+    def create_policy_from_template(
+        self,
+        template: PolicyTemplateRequest,
+    ) -> PolicyTemplateCreateResponse:
+        normalized = self._normalize_template_request(template)
+
+        with self._lock:
+            store = self._load_store_unlocked()
+            policies = self._policies_from_store(store)
+            timestamp = self._now_iso()
+            policy_id = self._ensure_unique_policy_id(
+                self._build_template_id(str(normalized["name"])),
+                {policy.id for policy in policies},
+            )
+            policy = self._build_template_policy(
+                normalized,
+                policy_id=policy_id,
+                timestamp=timestamp,
+            )
+            policies.append(policy)
+            policies = self._refresh_policies_from_live(policies, strict=False)
+
+            updated_policy = self._find_policy(policies, policy_id)
+            definition = self._definition_for_policy(updated_policy)
+            preview = self._build_preview(updated_policy, definition)
+            events = self._events_from_store(store)
+            events.append(
+                self._build_event(
+                    policy=updated_policy,
+                    action="create",
+                    result="success",
+                    timestamp=timestamp,
+                    message=(
+                        "Created template policy object. "
+                        + (
+                            "Live execution is available through the current seeded mapping."
+                            if definition["execution_status"]
+                            == PolicyExecutionStatus.SUPPORTED
+                            else "Policy remains preview-only because no live execution mapping is available."
+                        )
+                    ),
+                )
+            )
+            evidence = self._evidence_from_store(store)
+            evidence.append(
+                self._build_evidence_snapshot(
+                    policy=updated_policy,
+                    action="create",
+                    timestamp=timestamp,
+                )
+            )
+            self._save_store_unlocked(
+                policies,
+                events,
+                evidence,
+            )
+
+            return PolicyTemplateCreateResponse(
+                created=True,
+                policy=updated_policy,
+                preview=preview,
+            )
 
     def apply_policy(self, policy_id: str) -> dict[str, object]:
         with self._lock:
             store = self._load_store_unlocked()
             policies = self._policies_from_store(store)
-            self._find_policy(policies, policy_id)
-            definition = self._get_definition(policy_id)
+            policy = self._find_policy(policies, policy_id)
+            definition = self._definition_for_policy(policy)
+            self._ensure_policy_supports_live_execution(policy, definition, action="apply")
 
             getattr(self._ovs_service, str(definition["apply_method"]))()
 
@@ -271,8 +356,13 @@ class PolicyCenterService:
         with self._lock:
             store = self._load_store_unlocked()
             policies = self._policies_from_store(store)
-            self._find_policy(policies, policy_id)
-            definition = self._get_definition(policy_id)
+            policy = self._find_policy(policies, policy_id)
+            definition = self._definition_for_policy(policy)
+            self._ensure_policy_supports_live_execution(
+                policy,
+                definition,
+                action="rollback",
+            )
 
             rollback_strategy = str(definition["rollback_strategy"])
             if rollback_strategy == "recover_baseline":
@@ -329,7 +419,9 @@ class PolicyCenterService:
         with self._lock:
             store = self._load_store_unlocked()
             policies = self._policies_from_store(store)
-            self._find_policy(policies, policy_id)
+            policy = self._find_policy(policies, policy_id)
+            definition = self._definition_for_policy(policy)
+            self._ensure_policy_supports_live_execution(policy, definition, action="verify")
 
             timestamp = self._now_iso()
             policies = self._refresh_policies_from_live(
@@ -627,37 +719,60 @@ class PolicyCenterService:
         except RuntimeError:
             if strict:
                 raise
-            return policies
+            return [
+                self._copy_policy(
+                    policy,
+                    execution_status=self._definition_for_policy(policy)["execution_status"],
+                    execution_reason=self._definition_for_policy(policy).get(
+                        "execution_reason"
+                    ),
+                )
+                for policy in policies
+            ]
 
         refresh_timestamp = verified_at or self._now_iso()
-        return [
-            self._copy_policy(
-                policy,
-                live_state=self._derive_live_state(policy.id, status),
-                compliance=self._derive_compliance(
-                    policy.desired_state,
-                    self._derive_live_state(policy.id, status),
-                ),
-                last_verified_at=refresh_timestamp,
+        refreshed_policies: list[PolicyRecord] = []
+        for policy in policies:
+            definition = self._definition_for_policy(policy)
+            live_state = self._derive_live_state(definition, status)
+            refreshed_policies.append(
+                self._copy_policy(
+                    policy,
+                    live_state=live_state,
+                    compliance=self._derive_compliance(
+                        policy.desired_state,
+                        live_state,
+                    ),
+                    last_verified_at=refresh_timestamp,
+                    execution_status=definition["execution_status"],
+                    execution_reason=definition.get("execution_reason"),
+                )
             )
-            for policy in policies
-        ]
+        return refreshed_policies
 
     def _derive_live_state(
         self,
-        policy_id: str,
+        definition: dict[str, object],
         status: dict[str, object],
     ) -> PolicyLiveState:
-        definition = self._get_definition(policy_id)
+        if (
+            definition.get("execution_status")
+            != PolicyExecutionStatus.SUPPORTED
+        ):
+            return PolicyLiveState.NOT_ENFORCED
+
         flow_cookies = status.get("flow_cookies")
         if not isinstance(flow_cookies, dict):
             return PolicyLiveState.UNKNOWN
 
-        cookie_keys = [str(cookie_key) for cookie_key in definition["cookie_flags"]]
-        cookie_matches = [
-            bool(flow_cookies.get(cookie_key))
-            for cookie_key in cookie_keys
+        cookie_keys = [
+            str(cookie_key)
+            for cookie_key in definition.get("cookie_flags", ())
         ]
+        if not cookie_keys:
+            return PolicyLiveState.NOT_ENFORCED
+
+        cookie_matches = [bool(flow_cookies.get(cookie_key)) for cookie_key in cookie_keys]
         match_count = sum(cookie_matches)
 
         if match_count == len(cookie_matches):
@@ -714,11 +829,25 @@ class PolicyCenterService:
         action: str,
         timestamp: str,
     ) -> PolicyEvidenceRecord:
-        definition = self._get_definition(policy.id)
+        definition = self._definition_for_policy(policy)
         expected_cookies = {
-            str(cookie)
-            for cookie in definition.get("expected_cookies", ())
+            str(cookie) for cookie in definition.get("expected_cookies", ())
         }
+
+        if not expected_cookies:
+            return PolicyEvidenceRecord(
+                policy_id=policy.id,
+                timestamp=timestamp,
+                action=action,
+                compliance=policy.compliance,
+                live_state=policy.live_state,
+                relevant_flows=[],
+                flow_count=0,
+                summary=(
+                    "No execution mapping is available for live evidence capture. "
+                    f"{definition.get('execution_reason') or 'Preview-only policy object.'}"
+                ),
+            )
 
         try:
             ovs_flows = self._ovs_service.get_ovs_flows()
@@ -773,11 +902,366 @@ class PolicyCenterService:
             return "Rolled back policy via baseline recovery."
         return "Rolled back policy via targeted flow removal."
 
-    def _get_definition(self, policy_id: str) -> dict[str, object]:
+    def _build_preview(
+        self,
+        policy: PolicyRecord,
+        definition: dict[str, object],
+    ) -> PolicyPreview:
+        supports_live_execution = (
+            definition.get("execution_status") == PolicyExecutionStatus.SUPPORTED
+        )
+        return PolicyPreview(
+            policy=policy,
+            mapped_enforcement_action=str(definition["mapped_enforcement_action"]),
+            affected_target=policy.target,
+            expected_impact=str(definition["expected_impact"]),
+            notes=[str(note) for note in definition.get("notes", ())],
+            risk=str(definition["risk"]),
+            execution_status=definition["execution_status"],
+            execution_reason=(
+                str(definition["execution_reason"])
+                if definition.get("execution_reason")
+                else None
+            ),
+            generated_policy_shape=policy,
+            mapping_reference_policy_id=(
+                str(definition["mapping_reference_policy_id"])
+                if definition.get("mapping_reference_policy_id")
+                else None
+            ),
+            expected_cookies=[
+                str(cookie) for cookie in definition.get("expected_cookies", ())
+            ],
+            expected_flow_labels=[
+                str(label) for label in definition.get("expected_flow_labels", ())
+            ],
+            supports_apply=supports_live_execution,
+            supports_verify=supports_live_execution,
+            supports_rollback=supports_live_execution,
+        )
+
+    def _definition_for_policy(self, policy: PolicyRecord) -> dict[str, object]:
+        if (
+            policy.origin == PolicyOrigin.TEMPLATE
+            or policy.template_type is not None
+        ):
+            return self._build_template_definition(policy)
+        return self._get_seed_definition(policy.id)
+
+    def _get_seed_definition(self, policy_id: str) -> dict[str, object]:
         definition = POLICY_DEFINITIONS.get(policy_id)
         if definition is None:
             raise KeyError(f"Policy '{policy_id}' was not found")
-        return definition
+        return {
+            **definition,
+            "execution_status": PolicyExecutionStatus.SUPPORTED,
+            "execution_reason": None,
+            "mapping_reference_policy_id": policy_id,
+            "expected_flow_labels": POLICY_FLOW_LABELS.get(policy_id, ()),
+        }
+
+    def _build_template_definition(self, policy: PolicyRecord) -> dict[str, object]:
+        mapping_policy_id = self._template_mapping_policy_id(policy)
+        action = self._enum_value(policy.action or "block").lower()
+        protocol = self._enum_value(policy.protocol or "unknown").lower()
+        direction = self._enum_value(policy.direction or "unknown").lower()
+        target = self._build_template_target(
+            str(policy.source_host or ""),
+            str(policy.destination_host or ""),
+            direction,
+        )
+        port_label = f"/{policy.port}" if policy.port is not None else ""
+
+        if mapping_policy_id is None:
+            return {
+                "mapped_enforcement_action": "No live execution mapping available.",
+                "expected_impact": (
+                    "This policy will remain visible in Policy Center, but v1 will not "
+                    "push any live enforcement for this template combination."
+                ),
+                "notes": [
+                    "Preview-only object. Unsupported live enforcement for this template combination in v1.",
+                    "No execution mapping available to the current seeded policy helpers.",
+                    "Apply, verify, and rollback stay disabled until a future execution mapping is added.",
+                ],
+                "risk": (
+                    "Low enforcement risk because no switch change will be attempted. "
+                    "Operator risk remains if the object is assumed to be active."
+                ),
+                "cookie_flags": (),
+                "expected_cookies": (),
+                "expected_flow_labels": (),
+                "execution_status": PolicyExecutionStatus.PREVIEW_ONLY,
+                "execution_reason": (
+                    "Preview-only. Unsupported live enforcement. "
+                    "No execution mapping available."
+                ),
+                "mapping_reference_policy_id": None,
+            }
+
+        seed_definition = self._get_seed_definition(mapping_policy_id)
+        protocol_label = protocol.upper() if protocol == "tcp" else protocol.upper()
+        expected_impact = (
+            f"Traffic matching {protocol_label}{port_label} on {target} is blocked "
+            f"using the current {mapping_policy_id} enforcement path."
+        )
+        notes = [
+            f"Reuses the existing seeded enforcement mapping '{mapping_policy_id}'.",
+            "Evidence, verification, events, and reporting continue through the shared Policy Center pipeline.",
+            "This template remains a separate policy object even though the live execution path is reused.",
+        ]
+        return {
+            **seed_definition,
+            "mapped_enforcement_action": (
+                f"Reuse seeded mapping '{mapping_policy_id}': "
+                f"{seed_definition['mapped_enforcement_action']}"
+            ),
+            "expected_impact": expected_impact,
+            "notes": notes,
+            "risk": str(seed_definition["risk"]),
+            "mapping_reference_policy_id": mapping_policy_id,
+            "expected_flow_labels": POLICY_FLOW_LABELS.get(mapping_policy_id, ()),
+            "execution_status": PolicyExecutionStatus.SUPPORTED,
+            "execution_reason": None,
+        }
+
+    def _normalize_template_request(
+        self,
+        template: PolicyTemplateRequest,
+    ) -> dict[str, object]:
+        name = " ".join(template.name.split()).strip()
+        description = " ".join((template.description or "").split()).strip() or None
+        template_type = "safe_host_traffic_block_v1"
+        source_host = template.source_host.strip().lower()
+        destination_host = template.destination_host.strip().lower()
+        protocol = template.protocol.strip().lower()
+        direction = template.direction.strip().lower()
+        action = template.action.strip().lower()
+        port = template.port
+
+        if not name:
+            raise ValueError("Policy name is required.")
+        if template.template_type.strip() != template_type:
+            raise ValueError(
+                "Policy Template Builder v1 only supports template_type "
+                "'safe_host_traffic_block_v1'."
+            )
+        if action != "block":
+            raise ValueError("Policy Template Builder v1 only supports action 'block'.")
+        if protocol not in {"icmp", "tcp", "ipv4"}:
+            raise ValueError("Protocol must be one of icmp, tcp, or ipv4.")
+        if direction not in {"one-way", "two-way"}:
+            raise ValueError("Direction must be one of one-way or two-way.")
+        if source_host not in DEMO_HOSTS or destination_host not in DEMO_HOSTS:
+            raise ValueError("Source and destination must be known demo hosts.")
+        if source_host == destination_host:
+            raise ValueError("Source and destination hosts must be different.")
+        if protocol != "tcp" and port is not None:
+            raise ValueError("Port is only supported when protocol is tcp.")
+
+        return {
+            "name": name,
+            "description": description,
+            "template_type": template_type,
+            "source_host": source_host,
+            "destination_host": destination_host,
+            "protocol": protocol,
+            "port": port if protocol == "tcp" else None,
+            "direction": direction,
+            "action": action,
+        }
+
+    def _build_template_policy(
+        self,
+        normalized: dict[str, object],
+        *,
+        policy_id: str,
+        timestamp: str,
+    ) -> PolicyRecord:
+        source_host = str(normalized["source_host"])
+        destination_host = str(normalized["destination_host"])
+        direction = str(normalized["direction"])
+        protocol = str(normalized["protocol"])
+        port = normalized["port"]
+        policy = PolicyRecord(
+            id=policy_id,
+            name=str(normalized["name"]),
+            type="template",
+            description=(
+                str(normalized["description"])
+                if normalized["description"] is not None
+                else self._default_template_description(
+                    source_host,
+                    destination_host,
+                    protocol,
+                    port if isinstance(port, int) else None,
+                    direction,
+                )
+            ),
+            target=self._build_template_target(source_host, destination_host, direction),
+            scope=f"{protocol}{f'/{port}' if port is not None else ''}:{direction}",
+            priority=self._template_priority(
+                source_host,
+                destination_host,
+                protocol,
+                port if isinstance(port, int) else None,
+                direction,
+            ),
+            enabled=False,
+            desired_state=PolicyDesiredState.DISABLED,
+            live_state=PolicyLiveState.NOT_ENFORCED,
+            compliance=PolicyCompliance.COMPLIANT,
+            created_at=timestamp,
+            updated_at=timestamp,
+            version=1,
+            origin=PolicyOrigin.TEMPLATE,
+            template_type=str(normalized["template_type"]),
+            source_host=source_host,
+            destination_host=destination_host,
+            protocol=protocol,
+            port=port if isinstance(port, int) else None,
+            direction=direction,
+            action=str(normalized["action"]),
+        )
+        definition = self._definition_for_policy(policy)
+        return self._copy_policy(
+            policy,
+            execution_status=definition["execution_status"],
+            execution_reason=definition.get("execution_reason"),
+        )
+
+    def _template_mapping_policy_id(self, policy: PolicyRecord) -> str | None:
+        if (
+            self._enum_value(policy.action).lower() != "block"
+            or self._enum_value(policy.direction).lower() != "two-way"
+        ):
+            return None
+
+        host_pair = frozenset(
+            {
+                self._enum_value(policy.source_host).lower(),
+                self._enum_value(policy.destination_host).lower(),
+            }
+        )
+        if host_pair != frozenset({"h1", "h2"}):
+            return None
+
+        protocol = self._enum_value(policy.protocol).lower()
+        if protocol == "icmp":
+            return "block_ping_h1_h2"
+        if protocol == "ipv4":
+            return "isolate_h1"
+        if protocol == "tcp" and policy.port == 80:
+            return "block_http_h1_h2"
+        return None
+
+    def _build_template_target(
+        self,
+        source_host: str,
+        destination_host: str,
+        direction: str,
+    ) -> str:
+        connector = "<->" if direction == "two-way" else "->"
+        return (
+            f"{source_host} ({self._host_ip(source_host)}) "
+            f"{connector} "
+            f"{destination_host} ({self._host_ip(destination_host)})"
+        )
+
+    def _default_template_description(
+        self,
+        source_host: str,
+        destination_host: str,
+        protocol: str,
+        port: int | None,
+        direction: str,
+    ) -> str:
+        connector = "between" if direction == "two-way" else "from"
+        if direction == "two-way":
+            host_text = f"{source_host} and {destination_host}"
+        else:
+            host_text = f"{source_host} to {destination_host}"
+
+        protocol_label = protocol.upper()
+        if protocol == "tcp" and port is not None:
+            protocol_label = f"TCP/{port}"
+
+        return f"Block {protocol_label} traffic {connector} {host_text}."
+
+    def _template_priority(
+        self,
+        source_host: str,
+        destination_host: str,
+        protocol: str,
+        port: int | None,
+        direction: str,
+    ) -> int:
+        template_policy = PolicyRecord(
+            id="template-priority-probe",
+            name="Template Priority Probe",
+            type="template",
+            description="",
+            target="",
+            scope="",
+            priority=150,
+            enabled=False,
+            desired_state=PolicyDesiredState.DISABLED,
+            live_state=PolicyLiveState.NOT_ENFORCED,
+            compliance=PolicyCompliance.COMPLIANT,
+            created_at=self._now_iso(),
+            updated_at=self._now_iso(),
+            origin=PolicyOrigin.TEMPLATE,
+            template_type="safe_host_traffic_block_v1",
+            source_host=source_host,
+            destination_host=destination_host,
+            protocol=protocol,
+            port=port,
+            direction=direction,
+            action="block",
+        )
+        mapping_policy_id = self._template_mapping_policy_id(template_policy)
+        if mapping_policy_id is None:
+            return 150
+        return int(POLICY_DEFINITIONS[mapping_policy_id]["priority"])
+
+    def _build_template_id(self, name: str) -> str:
+        slug = re.sub(r"[^a-z0-9]+", "-", name.lower()).strip("-")
+        if not slug:
+            slug = "policy"
+        return f"template-{slug}"
+
+    def _ensure_unique_policy_id(
+        self,
+        base_id: str,
+        existing_ids: set[str],
+    ) -> str:
+        if base_id not in existing_ids:
+            return base_id
+
+        suffix = 2
+        while f"{base_id}-{suffix}" in existing_ids:
+            suffix += 1
+        return f"{base_id}-{suffix}"
+
+    def _host_ip(self, host_id: str) -> str:
+        host = DEMO_HOSTS.get(host_id)
+        return host["ip"] if host is not None else "unknown"
+
+    def _ensure_policy_supports_live_execution(
+        self,
+        policy: PolicyRecord,
+        definition: dict[str, object],
+        *,
+        action: str,
+    ) -> None:
+        if definition.get("execution_status") == PolicyExecutionStatus.SUPPORTED:
+            return
+
+        raise ValueError(
+            f"Policy '{policy.name}' is preview-only. "
+            f"Cannot {action} because live enforcement is unsupported and no "
+            "execution mapping is available."
+        )
 
     def _find_policy(
         self,
