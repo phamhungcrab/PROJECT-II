@@ -664,6 +664,18 @@ export function DashboardPage() {
             <span>API</span>
             <strong className="mono">{appConfig.apiBaseUrl}</strong>
           </div>
+          <Link
+            className="button button--ghost"
+            to="/metrics-center"
+            style={{
+              display: 'inline-flex',
+              alignItems: 'center',
+              justifyContent: 'center',
+              textDecoration: 'none',
+            }}
+          >
+            Open Metrics Center
+          </Link>
           <button className="button" type="button" onClick={reload} disabled={isLoading}>
             Refresh dashboard
           </button>

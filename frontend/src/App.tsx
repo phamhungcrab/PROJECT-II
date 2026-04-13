@@ -5,6 +5,7 @@ import { DashboardPage } from './pages/DashboardPage'
 import { DemoAssistantPage } from './pages/DemoAssistantPage'
 import { FlowsPage } from './pages/FlowsPage'
 import { InventoryPage } from './pages/InventoryPage'
+import { MetricsCenterPage } from './pages/MetricsCenterPage'
 import { ModelViewerPage } from './pages/ModelViewerPage'
 import { PolicyCenterPage } from './pages/PolicyCenterPage'
 import { TopologyPage } from './pages/TopologyPage'
@@ -18,6 +19,7 @@ function App() {
           <Route path="/alert-center" element={<AlertCenterPage />} />
           <Route path="/dashboard" element={<DashboardPage />} />
           <Route path="/demo-assistant" element={<DemoAssistantPage />} />
+          <Route path="/metrics-center" element={<MetricsCenterPage />} />
           <Route path="/policies" element={<PolicyCenterPage />} />
           <Route path="/model-viewer" element={<ModelViewerPage />} />
           <Route path="/topology" element={<TopologyPage />} />
