@@ -245,6 +245,86 @@ export function DashboardPage() {
       detail: recoveryNarrative,
     },
   ]
+  const controllerReachable = data?.health.status === 'ok'
+  const topologySwitchCount = data?.topology.switch_count ?? 0
+  const topologyHostCount = data?.topology.host_count ?? 0
+  const openingStatement = `${appConfig.appName} turns this SDN lab into an operator console rather than a manual network exercise. The operator can observe desired state, apply policy, verify live OVS evidence, detect drift, and recover to baseline in one workflow. That is the core value being demonstrated during the defense.`
+  const architectureSummary = [
+    'React + Vite operator console for live control and narration.',
+    'FastAPI policy/control layer as the operational backend.',
+    'OpenDaylight as the SDN controller integration point.',
+    'Mininet + OVS as the live enforcement environment.',
+  ]
+  const technicalContributions = [
+    'Policy lifecycle from desired state to apply, verify, rollback, and recovery.',
+    'Live OVS evidence and classified enforcement flows visible in the UI.',
+    'Closed-loop drift detection between policy intent and switch state.',
+    'Evidence-driven operations with recent events, verification history, and reports.',
+  ]
+  const liveDemoSequence = [
+    'Start in Baseline and confirm aligned control state.',
+    'Run Ping Block Demo and show Policy Center evidence.',
+    'Open Flows page and point at live OVS policy flows.',
+    'Recover Baseline before moving to the next restrictive scenario.',
+    'Run HTTP Block Demo and narrate compliance plus recovery readiness.',
+    'Close with drift, evidence, and rollback/recovery summary.',
+  ]
+  const preDefenseChecklist = [
+    {
+      label: 'ODL reachable',
+      ready: controllerReachable,
+      note: data
+        ? `${data.health.controller.type} at ${data.health.controller.base_url}`
+        : 'Controller health data is still loading.',
+    },
+    {
+      label: 'Backend reachable',
+      ready: controllerReachable,
+      note: data
+        ? `${data.health.service} health is ${formatLabel(data.health.status)}`
+        : 'Backend health data is still loading.',
+    },
+    {
+      label: 'Frontend reachable',
+      ready: true,
+      note: 'Dashboard is rendered and operator controls are available.',
+    },
+    {
+      label: 'Mininet ready',
+      ready: topologySwitchCount > 0 && topologyHostCount > 0,
+      note: `${formatNumber(topologySwitchCount)} switches and ${formatNumber(
+        topologyHostCount,
+      )} hosts discovered in topology.`,
+    },
+    {
+      label: 'Baseline recovered',
+      ready: isBaselineActive,
+      note: isBaselineActive
+        ? 'Base forwarding is active and restrictive policies are cleared.'
+        : 'Run Recover Baseline before starting the defense sequence.',
+    },
+    {
+      label: 'Policy Center loaded',
+      ready: Boolean(policySummaryQuery.data),
+      note: policySummaryQuery.data
+        ? 'Policy objects, compliance, and drift data are available.'
+        : 'Open Policy Center and refresh once before presenting.',
+    },
+    {
+      label: 'Flows page ready',
+      ready: Boolean(ovsEvidence),
+      note: ovsEvidence
+        ? `OVS evidence is loaded with ${formatNumber(ovsEvidence.flow_count)} flows.`
+        : 'Open Flows and refresh live OVS flows before presenting.',
+    },
+    {
+      label: 'Demo Assistant ready',
+      ready: Boolean(policySummaryQuery.data && policyEventsQuery.data),
+      note: 'Scenario runbook and speaker assist are available for guided narration.',
+    },
+  ]
+  const closingStatement =
+    'This project demonstrates more than monitoring. It shows a usable SDN management product with live enforcement evidence, closed-loop verification, drift awareness, and explicit recovery paths that make the lab operationally credible.'
 
   function appendOperationLog(action: string, result: OperationLogEntry['result']) {
     setOperationLogs((current) =>
@@ -617,6 +697,188 @@ export function DashboardPage() {
               tone="success"
             />
           </div>
+
+          {defenseMode ? (
+            <Panel
+              title="Final Defense Pack"
+              description="Compact on-screen defense helper for opening, architecture, live sequence, and final closing."
+              className="panel--defense-primary"
+              action={
+                <StatusBadge
+                  label="Defense Mode Pack"
+                  tone="success"
+                />
+              }
+            >
+              <div className="content-grid content-grid--two">
+                <div className="metadata-item">
+                  <span className="metadata-label">Project Title</span>
+                  <strong className="metadata-value">{appConfig.appName}</strong>
+                  <p className="entity-list-meta" style={{ marginTop: '10px' }}>
+                    Policy lifecycle, enforcement evidence, drift detection, and
+                    recovery for the SDN lab.
+                  </p>
+                </div>
+
+                <div className="metadata-item">
+                  <span className="metadata-label">Opening Statement</span>
+                  <p className="entity-list-meta" style={{ marginTop: '12px' }}>
+                    {openingStatement}
+                  </p>
+                </div>
+              </div>
+
+              <div className="content-grid content-grid--two" style={{ marginTop: '16px' }}>
+                <div className="metadata-item">
+                  <span className="metadata-label">Architecture Summary</span>
+                  <div className="chip-row" style={{ marginTop: '12px' }}>
+                    {architectureSummary.map((item) => (
+                      <span key={item} className="chip">
+                        {item}
+                      </span>
+                    ))}
+                  </div>
+                </div>
+
+                <div className="metadata-item">
+                  <span className="metadata-label">Why This Is More Than A Demo</span>
+                  <div className="chip-row" style={{ marginTop: '12px' }}>
+                    {defenseDepthBullets.map((point) => (
+                      <span key={point} className="chip">
+                        {point}
+                      </span>
+                    ))}
+                  </div>
+                </div>
+              </div>
+
+              <div className="content-grid content-grid--two" style={{ marginTop: '16px' }}>
+                <div className="metadata-item">
+                  <span className="metadata-label">Key Technical Contributions</span>
+                  <ul
+                    style={{
+                      marginTop: '12px',
+                      marginBottom: 0,
+                      paddingLeft: '18px',
+                      color: 'var(--text-secondary)',
+                    }}
+                  >
+                    {technicalContributions.map((item) => (
+                      <li key={item} style={{ marginTop: '8px' }}>
+                        {item}
+                      </li>
+                    ))}
+                  </ul>
+                </div>
+
+                <div className="metadata-item">
+                  <span className="metadata-label">Live Demo Sequence</span>
+                  <ol
+                    style={{
+                      marginTop: '12px',
+                      marginBottom: 0,
+                      paddingLeft: '18px',
+                      color: 'var(--text-secondary)',
+                    }}
+                  >
+                    {liveDemoSequence.map((item) => (
+                      <li key={item} style={{ marginTop: '8px' }}>
+                        {item}
+                      </li>
+                    ))}
+                  </ol>
+                </div>
+              </div>
+
+              <div className="metadata-item" style={{ marginTop: '16px' }}>
+                <span className="metadata-label">Pre-Defense Checklist</span>
+                <div
+                  style={{
+                    marginTop: '12px',
+                    display: 'grid',
+                    gap: '10px',
+                  }}
+                >
+                  {preDefenseChecklist.map((item) => (
+                    <div
+                      key={item.label}
+                      style={{
+                        display: 'flex',
+                        justifyContent: 'space-between',
+                        gap: '12px',
+                        alignItems: 'flex-start',
+                        flexWrap: 'wrap',
+                        paddingBottom: '10px',
+                        borderBottom: '1px solid var(--border-soft)',
+                      }}
+                    >
+                      <div>
+                        <strong className="metadata-value">{item.label}</strong>
+                        <p className="entity-list-meta" style={{ marginTop: '6px' }}>
+                          {item.note}
+                        </p>
+                      </div>
+                      <StatusBadge
+                        label={item.ready ? 'Ready' : 'Check'}
+                        tone={item.ready ? 'success' : 'warning'}
+                      />
+                    </div>
+                  ))}
+                </div>
+              </div>
+
+              <div className="content-grid content-grid--two" style={{ marginTop: '16px' }}>
+                <div className="metadata-item">
+                  <span className="metadata-label">Closing Statement</span>
+                  <p className="entity-list-meta" style={{ marginTop: '12px' }}>
+                    {closingStatement}
+                  </p>
+                </div>
+
+                <div className="metadata-item">
+                  <span className="metadata-label">Fast Navigation</span>
+                  <div className="form-actions" style={{ marginTop: '12px' }}>
+                    <Link
+                      className="button button--ghost"
+                      to="/demo-assistant"
+                      style={{
+                        display: 'inline-flex',
+                        alignItems: 'center',
+                        justifyContent: 'center',
+                        textDecoration: 'none',
+                      }}
+                    >
+                      Open Demo Assistant
+                    </Link>
+                    <Link
+                      className="button button--ghost"
+                      to="/policies"
+                      style={{
+                        display: 'inline-flex',
+                        alignItems: 'center',
+                        justifyContent: 'center',
+                        textDecoration: 'none',
+                      }}
+                    >
+                      Open Policy Center
+                    </Link>
+                    <Link
+                      className="button button--ghost"
+                      to="/flows"
+                      style={{
+                        display: 'inline-flex',
+                        alignItems: 'center',
+                        justifyContent: 'center',
+                        textDecoration: 'none',
+                      }}
+                    >
+                      Open Flows
+                    </Link>
+                  </div>
+                </div>
+              </div>
+            </Panel>
+          ) : null}
 
           <div className="content-grid content-grid--two">
             <Panel
