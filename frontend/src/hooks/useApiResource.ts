@@ -1,4 +1,4 @@
-import { useEffect, useRef, useState } from 'react'
+import { useCallback, useEffect, useRef, useState } from 'react'
 import { presenterRefreshEventName } from '../app/presenterDirector'
 
 function getErrorMessage(error: unknown) {
@@ -14,47 +14,58 @@ export function useApiResource<T>(
   dependencies: readonly unknown[] = [],
 ) {
   const loaderRef = useRef(loader)
+  const requestIdRef = useRef(0)
+  const mountedRef = useRef(false)
   const [data, setData] = useState<T | null>(null)
   const [isLoading, setIsLoading] = useState(true)
   const [error, setError] = useState<string | null>(null)
-  const [reloadToken, setReloadToken] = useState(0)
   const dependencyKey = JSON.stringify(dependencies)
 
   loaderRef.current = loader
 
-  useEffect(() => {
-    let active = true
+  const run = useCallback(async () => {
+    const requestId = requestIdRef.current + 1
+    requestIdRef.current = requestId
 
-    const run = async () => {
+    if (mountedRef.current) {
       setIsLoading(true)
       setError(null)
+    }
 
-      try {
-        const nextData = await loaderRef.current()
-        if (!active) {
-          return
-        }
+    try {
+      const nextData = await loaderRef.current()
+      if (!mountedRef.current || requestId !== requestIdRef.current) {
+        return { data: null, succeeded: false } as const
+      }
 
-        setData(nextData)
-      } catch (requestError) {
-        if (!active) {
-          return
-        }
+      setData(nextData)
+      return { data: nextData, succeeded: true } as const
+    } catch (requestError) {
+      if (!mountedRef.current || requestId !== requestIdRef.current) {
+        return { data: null, succeeded: false } as const
+      }
 
-        setError(getErrorMessage(requestError))
-      } finally {
-        if (active) {
-          setIsLoading(false)
-        }
+      setError(getErrorMessage(requestError))
+      return { data: null, succeeded: false } as const
+    } finally {
+      if (mountedRef.current && requestId === requestIdRef.current) {
+        setIsLoading(false)
       }
     }
+  }, [])
 
-    void run()
+  useEffect(() => {
+    mountedRef.current = true
 
     return () => {
-      active = false
+      mountedRef.current = false
+      requestIdRef.current += 1
     }
-  }, [dependencyKey, reloadToken])
+  }, [])
+
+  useEffect(() => {
+    void run()
+  }, [dependencyKey, run])
 
   useEffect(() => {
     if (typeof window === 'undefined') {
@@ -62,7 +73,7 @@ export function useApiResource<T>(
     }
 
     const handlePresenterRefresh = () => {
-      setReloadToken((value) => value + 1)
+      void run()
     }
 
     window.addEventListener(presenterRefreshEventName, handlePresenterRefresh)
@@ -70,12 +81,12 @@ export function useApiResource<T>(
     return () => {
       window.removeEventListener(presenterRefreshEventName, handlePresenterRefresh)
     }
-  }, [])
+  }, [run])
 
   return {
     data,
     isLoading,
     error,
-    reload: () => setReloadToken((value) => value + 1),
+    reload: run,
   }
 }

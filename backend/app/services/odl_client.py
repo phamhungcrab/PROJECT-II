@@ -218,8 +218,6 @@ class OpenDaylightClient:
         }
 
     def remove_demo_block_ping_policy(self) -> dict[str, object]:
-        self._ensure_node_exists(DEMO_POLICY_NODE_ID)
-
         for flow in DEMO_PING_BLOCK_FLOWS:
             self._delete_resource(
                 self._flow_inventory_path(
@@ -416,7 +414,13 @@ class OpenDaylightClient:
                 f"Cannot reach OpenDaylight at {self._settings.normalized_odl_base_url}: {exc}"
             ) from exc
 
-        if ignore_not_found and response.status_code == 404:
+        if ignore_not_found and (
+            response.status_code == 404
+            or (
+                response.status_code == 409
+                and "data-missing" in response.text.lower()
+            )
+        ):
             return response
 
         if response.status_code == 404 and node_id is not None:

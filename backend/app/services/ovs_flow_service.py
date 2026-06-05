@@ -5,8 +5,11 @@ class OVSFlowService:
     BRIDGE = "s1"
     PROTOCOL = "OpenFlow10"
     NORMAL_COOKIE = "0x1001"
-    BLOCK_PING_COOKIE_1 = "0x9001"
-    BLOCK_PING_COOKIE_2 = "0x9002"
+    # ODL stores these cookies as decimal 9001/9002; ovs-ofctl renders them in hex.
+    BLOCK_PING_COOKIE_1 = "0x2329"
+    BLOCK_PING_COOKIE_2 = "0x232a"
+    LEGACY_BLOCK_PING_COOKIE_1 = "0x9001"
+    LEGACY_BLOCK_PING_COOKIE_2 = "0x9002"
     BLOCK_HTTP_COOKIE_1 = "0x9011"
     BLOCK_HTTP_COOKIE_2 = "0x9012"
     ISOLATE_H1_COOKIE_1 = "0x9021"
@@ -68,8 +71,7 @@ class OVSFlowService:
         )
 
     def add_block_ping_flows(self) -> None:
-        self.delete_flow_by_cookie(self.BLOCK_PING_COOKIE_1)
-        self.delete_flow_by_cookie(self.BLOCK_PING_COOKIE_2)
+        self.remove_block_ping_flows()
         self._run(
             [
                 "sudo",
@@ -96,30 +98,8 @@ class OVSFlowService:
         )
 
     def remove_block_ping_flows(self) -> None:
-        self._run(
-            [
-                "sudo",
-                "-n",
-                "ovs-ofctl",
-                "-O",
-                self.PROTOCOL,
-                "del-flows",
-                self.BRIDGE,
-                f"cookie={self.BLOCK_PING_COOKIE_1}/-1",
-            ]
-        )
-        self._run(
-            [
-                "sudo",
-                "-n",
-                "ovs-ofctl",
-                "-O",
-                self.PROTOCOL,
-                "del-flows",
-                self.BRIDGE,
-                f"cookie={self.BLOCK_PING_COOKIE_2}/-1",
-            ]
-        )
+        for cookie in self._block_ping_cookies():
+            self.delete_flow_by_cookie(cookie)
 
     def add_block_http_flows(self) -> None:
         self.delete_flow_by_cookie(self.BLOCK_HTTP_COOKIE_1)
@@ -205,6 +185,8 @@ class OVSFlowService:
             self.NORMAL_COOKIE: ("base", "Base Forwarding"),
             self.BLOCK_PING_COOKIE_1: ("policy", "Block Ping A->B"),
             self.BLOCK_PING_COOKIE_2: ("policy", "Block Ping B->A"),
+            self.LEGACY_BLOCK_PING_COOKIE_1: ("policy", "Block Ping A->B (legacy)"),
+            self.LEGACY_BLOCK_PING_COOKIE_2: ("policy", "Block Ping B->A (legacy)"),
             self.BLOCK_HTTP_COOKIE_1: ("policy", "Block HTTP A->B"),
             self.BLOCK_HTTP_COOKIE_2: ("policy", "Block HTTP B->A"),
             self.ISOLATE_H1_COOKIE_1: ("policy", "Isolate H1 A->B"),
@@ -254,8 +236,14 @@ class OVSFlowService:
     def get_policy_status(self) -> dict[str, object]:
         raw_flows = self.dump_flows()
         has_base_normal = f"cookie={self.NORMAL_COOKIE}" in raw_flows
-        has_block_ping_1 = f"cookie={self.BLOCK_PING_COOKIE_1}" in raw_flows
-        has_block_ping_2 = f"cookie={self.BLOCK_PING_COOKIE_2}" in raw_flows
+        has_block_ping_1 = self._has_any_cookie(
+            raw_flows,
+            (self.BLOCK_PING_COOKIE_1, self.LEGACY_BLOCK_PING_COOKIE_1),
+        )
+        has_block_ping_2 = self._has_any_cookie(
+            raw_flows,
+            (self.BLOCK_PING_COOKIE_2, self.LEGACY_BLOCK_PING_COOKIE_2),
+        )
         has_block_http_1 = f"cookie={self.BLOCK_HTTP_COOKIE_1}" in raw_flows
         has_block_http_2 = f"cookie={self.BLOCK_HTTP_COOKIE_2}" in raw_flows
         has_isolate_h1_1 = f"cookie={self.ISOLATE_H1_COOKIE_1}" in raw_flows
@@ -278,6 +266,19 @@ class OVSFlowService:
             },
             "raw_flows": raw_flows,
         }
+
+    @classmethod
+    def _block_ping_cookies(cls) -> tuple[str, ...]:
+        return (
+            cls.BLOCK_PING_COOKIE_1,
+            cls.BLOCK_PING_COOKIE_2,
+            cls.LEGACY_BLOCK_PING_COOKIE_1,
+            cls.LEGACY_BLOCK_PING_COOKIE_2,
+        )
+
+    @staticmethod
+    def _has_any_cookie(raw_flows: str, cookies: tuple[str, ...]) -> bool:
+        return any(f"cookie={cookie}" in raw_flows for cookie in cookies)
 
     def recover_baseline(self) -> dict[str, object]:
         self.remove_block_ping_flows()

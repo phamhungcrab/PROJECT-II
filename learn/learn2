@@ -1,0 +1,529 @@
+Đúng, đổi chiến lược như vậy sẽ **dễ vào hơn nhiều**. Ta không học kiểu “đọc từng page khô” nữa, mà học theo kiểu:
+
+> **bấm demo thật → quan sát kết quả → giải thích chức năng → giải thích code path → giải thích mạng thật → chuẩn bị câu bảo vệ.**
+
+Hiện tại bạn đang ở trạng thái rất đẹp: **Recover Baseline xong, `h1 ping h2` được**. Đây chính là điểm bắt đầu chuẩn của demo.
+
+---
+
+# Chiến lược mới: học bằng “full demo có thầy kèm”
+
+Ta sẽ đi theo một vòng demo lớn, nhưng chia thành nhiều **scene nhỏ**. Mỗi scene chỉ học một ý chính, nhưng vẫn nằm trong mạch demo thật.
+
+Mẫu học của mỗi scene sẽ là:
+
+```text
+1. Trạng thái trước khi bấm
+2. Bấm nút nào
+3. Kết quả đúng phải hiện gì
+4. Vì sao ra kết quả đó
+5. Code frontend gọi gì
+6. Backend route/service làm gì
+7. ODL hay OVS bị ảnh hưởng
+8. Test bằng terminal thế nào
+9. Case lỗi hay gặp
+10. Câu bảo vệ ngắn
+```
+
+Mình sẽ không bắt bạn học code sâu ngay từ đầu. Nhưng mỗi nút sẽ có “code path” vừa đủ để bạn hiểu:
+
+```text
+UI button
+→ React handler
+→ API client
+→ FastAPI route
+→ service
+→ ODL RESTCONF hoặc OVS command
+→ JSON trả về
+→ UI cập nhật
+```
+
+---
+
+# Kịch bản demo tổng thể
+
+Đây là kịch bản full mà mình đề xuất cho project hiện tại.
+
+## Scene 0 — Baseline sạch
+
+Bạn đang ở đây rồi.
+
+Mục tiêu:
+
+```text
+Chứng minh lab đã sẵn sàng:
+h1 ↔ h2 thông nhau
+OVS có baseline flow
+không có policy chặn đang bật
+```
+
+Bạn đã có bằng chứng:
+
+```text
+h1 ping h2 được
+/api/flows/ovs có Base Forwarding
+cookie=0x1001
+actions=NORMAL
+```
+
+Ở code, recover baseline thực chất gọi logic xóa block ping, block HTTP, isolate H1 rồi add lại normal flow; hàm `recover_baseline()` trả về `base_forwarding_enabled=true`, còn các policy chặn là `false`. ([GitHub][1])
+
+Câu bảo vệ:
+
+> Em bắt đầu demo bằng baseline để đảm bảo trạng thái mạng sạch. Baseline không tạo lại topology, mà khôi phục flow table của OVS về trạng thái forward bình thường.
+
+---
+
+## Scene 1 — Dashboard: nhìn tổng quan hệ thống
+
+Bấm:
+
+```text
+Dashboard → Refresh dashboard
+```
+
+Mục tiêu:
+
+```text
+Xác nhận backend sống
+API target đúng
+ODL visibility có topology/inventory
+OVS evidence có baseline
+drift/alert hiện đang ổn
+```
+
+Code Dashboard gọi nhiều nguồn dữ liệu: health, topology summary, inventory nodes, policy summary, policy events, drift summary, demo status và OVS evidence. Trên frontend, `DashboardPage` có `loadOvsEvidence()` gọi `/api/flows/ovs`, `loadPolicyStatus()` gọi `/api/policies/demo/block-ping/status`, và `refreshOperationalState()` reload nhiều nhóm dữ liệu cùng lúc. ([GitHub][2])
+
+Bạn sẽ học các vùng:
+
+```text
+API
+TOPOLOGY ID
+NODES
+LINKS
+INVENTORY CONNECTORS
+INSTALLED FLOWS
+Policy Summary
+Drift Watch
+Alert Summary
+Live OVS Evidence
+Final Defense Pack
+```
+
+Câu bảo vệ:
+
+> Dashboard là màn hình tổng quan vận hành. Nó gom health, topology, inventory, policy state, drift state và OVS live evidence về một nơi để operator biết hệ thống đã sẵn sàng chưa.
+
+---
+
+## Scene 2 — Topology: ODL nhìn mạng như thế nào
+
+Bấm:
+
+```text
+Open Topology hoặc menu Topology
+```
+
+Mục tiêu:
+
+```text
+Hiểu s1 trong Mininet tương ứng openflow:1 trong ODL
+Hiểu vì sao node/link/host có thể không giống y hệt output Mininet
+Hiểu controller-side visibility
+```
+
+Bạn sẽ học:
+
+```text
+s1 là gì
+openflow:1 là gì
+node là gì
+link là gì
+termination point là gì
+vì sao LINKS có thể bằng 0 nhưng ping vẫn được
+```
+
+Câu bảo vệ:
+
+> Topology page cho thấy góc nhìn controller-side từ OpenDaylight. Em dùng nó để quan sát SDN fabric, nhưng em vẫn đối chiếu bằng OVS live state và Mininet runtime để tránh nhầm dữ liệu stale.
+
+---
+
+## Scene 3 — Inventory: ODL biết những tài nguyên nào
+
+Bấm:
+
+```text
+Inventory
+```
+
+Mục tiêu:
+
+```text
+Hiểu node openflow:1
+Hiểu connector openflow:1:1, openflow:1:2, openflow:1:LOCAL
+Hiểu table/flow/statistics trong inventory
+```
+
+Mapping cần nhớ:
+
+```text
+s1          ↔ openflow:1
+s1-eth1     ↔ openflow:1:1
+s1-eth2     ↔ openflow:1:2
+s1 internal ↔ openflow:1:LOCAL
+```
+
+Câu bảo vệ:
+
+> Inventory không phải sơ đồ kết nối, mà là danh sách tài nguyên controller nhìn thấy: node, connector, table và flow exposure.
+
+---
+
+## Scene 4 — Flows baseline: chứng minh data-plane đang bình thường
+
+Bấm:
+
+```text
+Flows → Refresh live flows
+```
+
+Mục tiêu:
+
+```text
+Thấy bridge = s1
+protocol = OpenFlow10
+Base Forwarding = 1
+Policy flows = 0
+Unknown flows = 0
+```
+
+Backend OVS service đang hard-code `BRIDGE = "s1"`, `PROTOCOL = "OpenFlow10"`, và dùng các cookie cố định như `0x1001` cho baseline, `0x9001/0x9002` cho block ping, `0x9011/0x9012` cho block HTTP, `0x9021/0x9022` cho isolate H1. ([GitHub][1])
+
+Câu bảo vệ:
+
+> Flows page là bằng chứng gần data-plane nhất, vì nó đọc flow table thật từ OVS bridge `s1`, không chỉ dựa vào topology controller-side.
+
+---
+
+## Scene 5 — Policy Center: apply Block Ping
+
+Bấm:
+
+```text
+Policy Center
+→ chọn block_ping_h1_h2
+→ Apply
+```
+
+Hoặc nếu ở Dashboard/Demo Assistant có nút demo:
+
+```text
+Run Ping Block Demo / Apply Block Ping
+```
+
+Mục tiêu:
+
+```text
+Biến desired intent “chặn ping h1 ↔ h2” thành flow thật trong OVS
+```
+
+Ở backend, demo endpoint `/api/policies/demo/block-ping` gọi `apply_policy("block_ping_h1_h2")` và trả flow IDs tương ứng hai chiều ICMP `10.0.0.1 → 10.0.0.2` và `10.0.0.2 → 10.0.0.1`. ([GitHub][3])
+
+Sau khi bấm, test trong Mininet:
+
+```bash
+h1 ping -c 3 h2
+```
+
+Kết quả đúng:
+
+```text
+0 received
+100% packet loss
+```
+
+Câu bảo vệ:
+
+> Khi apply Block Ping, operator không tự gõ `ovs-ofctl`; hệ thống chuyển policy object thành hai flow drop ICMP hai chiều trên OVS.
+
+---
+
+## Scene 6 — Flows sau Block Ping: xem evidence
+
+Bấm:
+
+```text
+Flows → Refresh live flows
+```
+
+Mục tiêu:
+
+```text
+Thấy Base Forwarding vẫn còn
+Thấy 2 policy flows Block Ping
+Không còn unknown flow
+```
+
+Kỳ vọng:
+
+```text
+cookie=0x1001 → Base Forwarding
+cookie=0x9001 → Block Ping h1 to h2
+cookie=0x9002 → Block Ping h2 to h1
+```
+
+Giải thích cốt lõi:
+
+```text
+Base Forwarding priority thấp hơn
+Block Ping priority cao hơn
+Packet ICMP khớp rule drop trước
+Packet khác ICMP vẫn có thể đi theo NORMAL
+```
+
+Câu bảo vệ:
+
+> Đây là enforcement evidence: policy không chỉ được ghi trong backend, mà đã xuất hiện thành flow rule thật trong OVS.
+
+---
+
+## Scene 7 — Verify policy: so desired state với live state
+
+Bấm:
+
+```text
+Policy Center → Verify
+```
+
+Mục tiêu:
+
+```text
+Không cài thêm flow mới
+Chỉ đọc live evidence rồi so với desired state
+```
+
+Frontend policy API có các hàm `applyPolicy`, `rollbackPolicy`, `verifyPolicy`, `getEvidence`, `getVerifications`, `getDemoStatus`, và `recoverBaselineDemo`; riêng `recoverBaselineDemo` gọi `/api/policies/demo/recover-baseline` bằng POST. ([GitHub][4])
+
+Câu bảo vệ:
+
+> Verify là bước đóng vòng điều khiển. Hệ thống không chỉ ra lệnh apply, mà đọc lại trạng thái OVS để kiểm tra policy có thực sự được enforce hay không.
+
+---
+
+## Scene 8 — Drift case: cố tình làm lệch trạng thái
+
+Đây là phần nâng điểm, nhưng làm sau khi bạn đã vững.
+
+Ta sẽ tạo drift bằng tay, ví dụ sau khi Block Ping đang enabled, xóa một flow:
+
+```bash
+sudo ovs-ofctl -O OpenFlow10 del-flows s1 "cookie=0x9001/-1"
+```
+
+Sau đó bấm:
+
+```text
+Verify / Refresh dashboard / Drift Watch
+```
+
+Mục tiêu:
+
+```text
+Desired state vẫn muốn block ping
+Nhưng live OVS thiếu một flow
+→ drift hoặc partial
+```
+
+Câu bảo vệ:
+
+> Drift xuất hiện khi trạng thái live của switch lệch khỏi desired state. Ví dụ policy yêu cầu block ping hai chiều, nhưng OVS bị mất một rule, hệ thống phải cảnh báo operator.
+
+---
+
+## Scene 9 — Recover Baseline
+
+Bấm:
+
+```text
+Recover Baseline
+```
+
+Mục tiêu:
+
+```text
+Gỡ policy hạn chế
+Đưa OVS về Base Forwarding
+Ping lại được
+```
+
+Backend có route `/api/policies/demo/recover-baseline`, route này gọi `recover_to_baseline()` trong policy service; ở tầng OVS, recover baseline xóa các flow block ping/block HTTP/isolate và add normal flow. ([GitHub][3])
+
+Test:
+
+```bash
+h1 ping -c 3 h2
+```
+
+Kết quả đúng:
+
+```text
+3 received
+0% packet loss
+```
+
+Câu bảo vệ:
+
+> Recovery là phần quan trọng của vận hành. Sau khi demo policy hạn chế hoặc drift, em có đường khôi phục rõ ràng về baseline an toàn.
+
+---
+
+## Scene 10 — Block HTTP
+
+Bấm:
+
+```text
+Apply Block HTTP
+```
+
+Mục tiêu:
+
+```text
+Chặn TCP port 80 giữa h1 và h2
+Ping vẫn có thể không bị chặn nếu chỉ block HTTP
+```
+
+Backend demo endpoint `/api/policies/demo/block-http` apply policy `block_http_h1_h2` và trả flow IDs hai chiều liên quan TCP port 80. ([GitHub][3])
+
+Test HTTP có thể cần chạy server:
+
+Trong Mininet:
+
+```bash
+h2 python3 -m http.server 80 &
+h1 curl http://10.0.0.2
+```
+
+Khi block HTTP bật, curl phải fail hoặc timeout. Ping có thể vẫn được nếu không có block ping/isolate.
+
+Câu bảo vệ:
+
+> Block HTTP chứng minh policy có thể nhắm vào loại traffic cụ thể, không phải cứ chặn toàn bộ host.
+
+---
+
+## Scene 11 — Isolate H1
+
+Bấm:
+
+```text
+Apply Isolate H1
+```
+
+Mục tiêu:
+
+```text
+Chặn IPv4 traffic liên quan h1/h2 mạnh hơn block ping hoặc block HTTP
+```
+
+Backend demo endpoint `/api/policies/demo/isolate-h1` apply policy `isolate_h1` và trả flow IDs dạng IP drop hai chiều giữa `10.0.0.1` và `10.0.0.2`. ([GitHub][3])
+
+Câu bảo vệ:
+
+> Isolate H1 là policy hạn chế mạnh hơn, dùng để mô phỏng tình huống cô lập host khi có sự cố hoặc cần phản ứng nhanh.
+
+---
+
+## Scene 12 — Timeline, Alert, Metrics, Defense Mode
+
+Sau khi chạy vài thao tác, bấm:
+
+```text
+Operations Timeline
+Alert Center
+Metrics Center
+Defense Mode / Presenter Mode
+```
+
+Mục tiêu:
+
+```text
+Xem lại lịch sử
+Xem cảnh báo
+Xem tổng quan chỉ số
+Dùng presenter layer để bảo vệ
+```
+
+Câu bảo vệ:
+
+> Các trang này biến demo thành một workflow vận hành có thể theo dõi: thao tác được ghi lại, trạng thái được tổng hợp, cảnh báo được hiển thị và người trình bày có kịch bản demo rõ ràng.
+
+---
+
+# Kịch bản học bắt đầu ngay từ trạng thái hiện tại
+
+Vì bạn đang **Recover Baseline xong**, ta sẽ bắt đầu **Demo Run 1: Baseline → Dashboard → Flows → Block Ping → Evidence → Recover**.
+
+Đây là vòng đầu tiên, vừa ngắn vừa đủ nhiều kiến thức.
+
+## Demo Run 1 sẽ học các nút/chức năng này
+
+```text
+1. Dashboard / Refresh dashboard
+2. Flows / Refresh live flows
+3. Mininet ping baseline
+4. Policy Center / Apply Block Ping
+5. Mininet ping fail
+6. Flows / xem 2 policy flows
+7. Policy Center / Verify
+8. Dashboard / Drift & Evidence
+9. Recover Baseline
+10. Mininet ping lại thành công
+```
+
+Sau vòng này, bạn sẽ hiểu trục xương sống của project:
+
+```text
+intent
+→ policy
+→ execution
+→ evidence
+→ verification
+→ recovery
+```
+
+---
+
+# Việc bạn làm ngay bây giờ
+
+Giữ nguyên Mininet đang chạy. Đừng tắt gì cả.
+
+## Bước 1
+
+Mở Dashboard ở:
+
+```text
+http://127.0.0.1:5173
+```
+
+Bấm:
+
+```text
+Refresh dashboard
+```
+
+Sau đó gửi mình ảnh từ phần stat cards xuống đến phần nào có:
+
+```text
+Policy Summary
+Drift Watch
+Alert Summary
+Live OVS Evidence
+```
+
+Mình sẽ đọc ảnh đó và giảng theo đúng kiểu demo: ô nào là gì, nút nào làm gì, code gọi gì, và khi bảo vệ nói như thế nào.
+
+[1]: https://github.com/phamhungcrab/PROJECT-II/blob/main/backend/app/services/ovs_flow_service.py "PROJECT-II/backend/app/services/ovs_flow_service.py at main · phamhungcrab/PROJECT-II · GitHub"
+[2]: https://raw.githubusercontent.com/phamhungcrab/PROJECT-II/main/frontend/src/pages/DashboardPage.tsx "raw.githubusercontent.com"
+[3]: https://github.com/phamhungcrab/PROJECT-II/blob/main/backend/app/api/routes/policies.py "PROJECT-II/backend/app/api/routes/policies.py at main · phamhungcrab/PROJECT-II · GitHub"
+[4]: https://github.com/phamhungcrab/PROJECT-II/blob/main/frontend/src/services/api/policyApi.ts "PROJECT-II/frontend/src/services/api/policyApi.ts at main · phamhungcrab/PROJECT-II · GitHub"

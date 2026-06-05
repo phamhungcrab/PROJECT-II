@@ -1,0 +1,512 @@
+Được. Mình sẽ làm theo kiểu **đọc code → hiểu nút bấm → hiểu API nào được gọi → hiểu OVS/ODL thay đổi gì → biết nói bảo vệ thế nào**. Nhưng phải chia nhỏ, vì nếu học tất cả nút một lúc sẽ loạn.
+
+Trước khi học từng nút bấm, **cần chuẩn bị đúng sơ đồ lab phù hợp với code hiện tại**. Nếu lab sai, bấm trên giao diện sẽ ra kết quả khó hiểu, ví dụ Dashboard thấy ODL nhưng OVS không có bridge, hoặc Policy Center báo lỗi vì không có `s1`.
+
+---
+
+# PLAN HỌC VÀ DEMO PROJECT-II
+
+Mình đề xuất học theo 6 chặng lớn. Mỗi chặng xong bạn nhắn **OK**, rồi mình mới chuyển sang chặng tiếp theo.
+
+---
+
+# Chặng 0 — Chuẩn bị lab đúng với code hiện tại
+
+Đây là bước bắt buộc trước khi bấm demo.
+
+Theo code backend hiện tại, `OVSFlowService` đang hard-code:
+
+```text
+BRIDGE = "s1"
+PROTOCOL = "OpenFlow10"
+```
+
+Tức là backend **chỉ biết thao tác với bridge tên `s1`**, và dùng `ovs-ofctl -O OpenFlow10`. Nếu Mininet của bạn tạo bridge tên khác, hoặc dùng OpenFlow version khác, thì bấm Apply policy sẽ lỗi hoặc không đúng evidence. Code cũng cài các flow cụ thể như base forwarding, block ping, block HTTP, isolate H1 bằng cookie và match rule cố định. ([GitHub][1])
+
+Sơ đồ lab đúng nên là:
+
+```text
+              OpenDaylight Controller
+              127.0.0.1:6653
+                       ↑
+                       │ OpenFlow 1.0
+                       │
+h1 10.0.0.1 ─── s1 / OVS bridge ─── h2 10.0.0.2
+              s1-eth1       s1-eth2
+```
+
+Trong đó:
+
+```text
+h1
+= host Mininet, IP thường là 10.0.0.1
+
+h2
+= host Mininet, IP thường là 10.0.0.2
+
+s1
+= OVS bridge / switch mà backend sẽ cài flow vào
+
+s1-eth1
+= port của switch nối về h1
+
+s1-eth2
+= port của switch nối về h2
+
+OpenDaylight
+= controller nhìn thấy s1 dưới dạng openflow:1
+
+FastAPI backend
+= cầu nối giữa frontend và ODL/OVS
+```
+
+Lệnh Mininet phù hợp nhất với code hiện tại:
+
+```bash
+sudo mn --controller=remote,ip=127.0.0.1,port=6653 \
+  --switch ovs,protocols=OpenFlow10 \
+  --topo single,2
+```
+
+Vì sao cần lệnh này?
+
+```text
+--controller=remote,ip=127.0.0.1,port=6653
+= bảo switch s1 kết nối tới OpenDaylight ở localhost port 6653
+
+--switch ovs,protocols=OpenFlow10
+= dùng Open vSwitch và OpenFlow 1.0, khớp với backend
+
+--topo single,2
+= tạo 1 switch và 2 host: h1 - s1 - h2
+```
+
+Đây là **trạng thái demo sạch** mình muốn bạn có trước khi học từng nút:
+
+```text
+ODL sống
+Backend sống
+Frontend sống
+Mininet đang chạy
+OVS có bridge s1
+s1 nối controller 127.0.0.1:6653
+h1 ping h2 được ở baseline
+Dashboard load được
+/api/flows/ovs không lỗi
+```
+
+---
+
+# Chặng 1 — Dashboard: hiểu từng ô và từng nút
+
+Dashboard là trang tổng quan. Code Dashboard gọi song song 3 nhóm dữ liệu chính: health, topology summary, inventory nodes; sau đó nó còn gọi thêm policy summary, policy events, drift summary, demo status và OVS evidence. Trong code `DashboardPage`, phần đầu dùng `sdnApi.getHealth()`, `sdnApi.getTopologySummary()`, `sdnApi.getInventoryNodes()` để tạo dữ liệu chính cho Dashboard. Sau đó nó gọi thêm `policyApi.getSummary`, `policyApi.getEvents`, `policyApi.getDriftSummary`, và `/api/flows/ovs` để lấy evidence từ OVS. ([GitHub][2])
+
+Ở chặng này mình sẽ giảng từng thứ:
+
+```text
+BACKEND TARGET / API
+CHECKED
+Defense Mode
+Presenter Mode
+Refresh dashboard
+Open Metrics Center
+Open Operations Timeline
+TOPOLOGY ID
+NODES
+LINKS
+INVENTORY CONNECTORS
+INSTALLED FLOWS
+Policy Summary
+Drift Watch
+Live OVS Evidence
+Recent Policy Events
+Final Defense Pack
+Pre-defense Checklist
+```
+
+Mỗi nút sẽ được giải thích theo mẫu:
+
+```text
+Nút này dùng làm gì?
+Bấm vào thì frontend gọi hàm nào?
+Backend/API nào bị gọi?
+Dữ liệu đến từ ODL hay OVS?
+Kết quả đúng phải nhìn thấy gì?
+Nếu lỗi thì lỗi thường do đâu?
+Khi bảo vệ nên nói câu gì?
+```
+
+Ví dụ với **Refresh dashboard**:
+
+```text
+Ý nghĩa:
+Làm mới trạng thái vận hành.
+
+Nó không tự cài flow mới.
+Nó chỉ gọi lại các API để đọc trạng thái mới nhất.
+
+Dữ liệu liên quan:
+- health từ FastAPI
+- topology/inventory từ ODL qua backend
+- policy/drift/evidence từ backend
+- OVS evidence từ /api/flows/ovs
+```
+
+Câu bảo vệ:
+
+> Nút Refresh dashboard dùng để kéo lại snapshot vận hành mới nhất từ backend, bao gồm controller reachability, topology, inventory, policy summary, drift state và OVS live evidence.
+
+---
+
+# Chặng 2 — Defense Mode và Presenter Rail
+
+Chặng này học riêng phần bạn vừa hỏi: **Defense Mode / Final Defense Pack / Presenter Rail**.
+
+Mình sẽ tách rõ:
+
+```text
+Defense Mode
+= bật nội dung hỗ trợ bảo vệ trên Dashboard
+
+Presenter Mode
+= bật lớp giao diện hỗ trợ trình bày
+
+Presenter Rail
+= thanh bên phải có trạng thái, shortcut, cue nói, quick action
+
+ALT+P
+= phím tắt mở/đóng presenter rail hoặc bật presenter mode
+```
+
+Code `AppShell` quản lý `defenseMode`, `presenterMode`, `presenterRailOpen` và lưu một số trạng thái vào `localStorage`. Khi bật Presenter Rail thì component `PresenterRail` được render ở cạnh phải giao diện. ([GitHub][3])
+
+Điểm quan trọng để bảo vệ:
+
+```text
+Defense Mode không phải SDN protocol.
+Defense Mode không cài flow.
+Defense Mode không thay OpenDaylight.
+Defense Mode chỉ là presenter layer.
+```
+
+Câu bảo vệ:
+
+> Defense Mode là lớp hỗ trợ trình bày, giúp em gom opening statement, architecture summary, demo sequence, checklist và recovery path ngay trên Dashboard. Nó không thay thế cơ chế SDN lõi, mà giúp quá trình bảo vệ rõ ràng và có bằng chứng hơn.
+
+---
+
+# Chặng 3 — Flows: hiểu OVS live evidence
+
+Chặng này cực quan trọng vì nó là “bằng chứng thật”.
+
+Code backend có hàm `dump_flows()` chạy:
+
+```text
+sudo -n ovs-ofctl -O OpenFlow10 dump-flows s1
+```
+
+Sau đó `get_ovs_flows()` parse output và phân loại flow theo cookie. Ví dụ cookie của base forwarding được label là `Base Forwarding`, block ping được label là `Block Ping A->B` và `Block Ping B->A`, block HTTP là `Block HTTP A->B/B->A`, isolate là `Isolate H1 A->B/B->A`. ([GitHub][1])
+
+Ở chặng này mình sẽ dạy bạn:
+
+```text
+Flow là gì?
+Flow table là gì?
+Cookie là gì?
+Priority là gì?
+Match là gì?
+Action là gì?
+actions=normal là gì?
+actions=drop là gì?
+Vì sao block ping cần 2 flow?
+Vì sao block HTTP dùng tp_dst=80 và tp_src=80?
+Vì sao isolate H1 dùng ip thay vì icmp/tcp?
+```
+
+Và học từng nút trên Flows page:
+
+```text
+Refresh live flows
+View raw flow
+Classified flows
+Policy flows
+Unknown flows
+Base forwarding flow
+```
+
+Câu bảo vệ:
+
+> Trang Flows là nơi em chứng minh trạng thái data-plane bằng OVS live evidence. Thay vì chỉ nói policy đã bật, em đọc trực tiếp flow table của bridge `s1` để xem switch thật đang có rule gì.
+
+---
+
+# Chặng 4 — Policy Center: hiểu từng policy object và nút Apply / Verify / Rollback / Recover
+
+Đây là chặng trung tâm.
+
+Project của bạn không nên trình bày kiểu:
+
+> Em có nút block ping.
+
+Mà nên trình bày kiểu:
+
+> Em quản lý policy object theo vòng đời desired state → execution → evidence → verification → compliance → drift → recovery.
+
+Các policy chính:
+
+```text
+baseline_forwarding
+block_ping_h1_h2
+block_http_h1_h2
+isolate_h1
+```
+
+Ở backend, OVS service có các hàm tương ứng:
+
+```text
+add_normal_flow()
+remove_normal_flow()
+
+add_block_ping_flows()
+remove_block_ping_flows()
+
+add_block_http_flows()
+remove_block_http_flows()
+
+add_isolate_h1_flows()
+remove_isolate_h1_flows()
+```
+
+Ví dụ block ping cài 2 rule ICMP hai chiều giữa `10.0.0.1` và `10.0.0.2`; block HTTP cài 2 rule TCP port 80 hai chiều; isolate H1 cài rule IP tổng quát hơn nên tác động mạnh hơn block ping hoặc block HTTP. ([GitHub][1])
+
+Chặng này mình sẽ dạy theo từng policy:
+
+## 4.1 Baseline Forwarding
+
+```text
+Nút Apply Baseline làm gì?
+Vì sao cần baseline trước demo?
+Flow actions=normal nghĩa là gì?
+Khi nào baseline là COMPLIANT?
+Khi nào baseline bị DRIFT?
+```
+
+## 4.2 Block Ping h1 ↔ h2
+
+```text
+Nút Apply Block Ping làm gì?
+Vì sao cần 2 chiều?
+Vì sao match icmp?
+Bấm xong test h1 ping h2 thế nào?
+Vì sao ping fail là đúng?
+Vì sao vẫn có thể HTTP không bị chặn?
+```
+
+## 4.3 Block HTTP h1 ↔ h2
+
+```text
+Nút Apply Block HTTP làm gì?
+TCP port 80 là gì?
+tp_dst=80 và tp_src=80 khác nhau thế nào?
+Cần chạy HTTP server trên h2 để demo không?
+Test bằng curl/wget thế nào?
+```
+
+## 4.4 Isolate H1
+
+```text
+Isolate khác block ping ở đâu?
+Vì sao isolate dùng match ip?
+Vì sao đây là policy mạnh hơn?
+Khi nào nên recover baseline sau isolate?
+```
+
+## 4.5 Verify
+
+```text
+Verify không cài flow mới.
+Verify đọc trạng thái live rồi so với desired state.
+Nếu khớp → COMPLIANT.
+Nếu lệch → DRIFT hoặc PARTIAL.
+```
+
+## 4.6 Rollback / Recover Baseline
+
+```text
+Rollback
+= quay lại trạng thái trước / gỡ policy đang áp dụng
+
+Recover Baseline
+= đưa lab về trạng thái an toàn, thường là baseline forwarding và gỡ policy hạn chế
+```
+
+Câu bảo vệ:
+
+> Policy Center là nơi em quản lý vòng đời policy. Mỗi policy không chỉ là một nút bấm, mà có desired state, execution, evidence, verification, compliance và recovery path.
+
+---
+
+# Chặng 5 — Demo Assistant: demo theo kịch bản, không bấm lung tung
+
+Sau khi hiểu Dashboard, Flows và Policy Center, mình mới cho bạn học **Demo Assistant**.
+
+Mục tiêu của Demo Assistant là giúp bạn demo theo trình tự:
+
+```text
+1. Recover Baseline
+2. Verify trạng thái ban đầu
+3. Apply Ping Block
+4. Test ping
+5. Show evidence
+6. Recover Baseline
+7. Apply HTTP Block
+8. Test HTTP
+9. Show evidence
+10. Recover
+11. Tổng kết drift/evidence/audit
+```
+
+Tại sao phải demo theo trình tự này?
+
+Vì nếu bạn bật nhiều policy cùng lúc, kết quả sẽ khó giải thích. Ví dụ vừa block ping, vừa isolate H1, vừa block HTTP thì khi packet bị drop, người nghe không biết do rule nào.
+
+Nguyên tắc demo:
+
+```text
+Mỗi lần chỉ demo một ý chính.
+Trước scenario mới, recover baseline.
+Sau khi apply, phải verify.
+Sau verify, phải mở Flows để chỉ evidence.
+Sau evidence, mới kết luận compliance.
+```
+
+Câu bảo vệ:
+
+> Em không demo bằng cách bấm ngẫu nhiên. Em dùng runbook để đảm bảo mỗi scenario có baseline rõ ràng, policy rõ ràng, evidence rõ ràng và recovery rõ ràng.
+
+---
+
+# Chặng 6 — Drift, Alert, Metrics, Timeline, Model Viewer
+
+Sau khi đã nắm policy và flow, mới học nhóm này.
+
+Thứ tự sẽ là:
+
+```text
+Drift
+= trạng thái live lệch khỏi desired state
+
+Alert Center
+= tổng hợp cảnh báo vận hành
+
+Metrics Center
+= số liệu tổng quan
+
+Operations Timeline
+= audit trail, lịch sử thao tác
+
+Model Viewer
+= xem model/YANG-lite/controller-side structure, học sau cùng
+```
+
+Lý do để Model Viewer học sau cùng: nó dễ kéo bạn sang YANG, RESTCONF, NETCONF, OpenConfig, trong khi hiện tại ưu tiên bảo vệ được sản phẩm.
+
+---
+
+# Demo chính thức mình sẽ xây cho bạn
+
+Sau khi học hết các chặng, mình sẽ gom thành một kịch bản bảo vệ như này:
+
+```text
+Bước 1: Mở Dashboard
+Nói: backend, ODL, topology, inventory, flow footprint.
+
+Bước 2: Recover Baseline
+Nói: đưa lab về trạng thái an toàn trước demo.
+
+Bước 3: Mở Mininet test h1 ping h2
+Nói: baseline cho phép forwarding bình thường.
+
+Bước 4: Apply Block Ping
+Nói: operator chuyển desired policy sang block ICMP giữa h1 và h2.
+
+Bước 5: Test h1 ping h2
+Nói: packet ICMP bị drop đúng theo policy.
+
+Bước 6: Mở Flows
+Nói: đây là live OVS evidence, có 2 flow drop ICMP hai chiều.
+
+Bước 7: Verify policy
+Nói: hệ thống so desired state với live switch state.
+
+Bước 8: Recover Baseline
+Nói: recovery path giúp đưa lab về trạng thái an toàn.
+
+Bước 9: Demo HTTP Block hoặc Isolate H1
+Nói: cùng một policy lifecycle nhưng áp dụng cho traffic khác.
+
+Bước 10: Mở Timeline / Alert / Metrics
+Nói: thao tác được ghi lại, có thể audit và review.
+
+Bước 11: Chốt
+Nói: project không chỉ là demo SDN, mà là SDN Management loop có evidence, verification, drift và recovery.
+```
+
+---
+
+# Thứ mình sẽ làm ở mỗi bài học
+
+Mỗi chức năng mình sẽ trình bày theo mẫu cố định:
+
+```text
+1. Chức năng này nằm ở page nào?
+2. Nó phục vụ mục đích gì?
+3. Nút nào quan trọng?
+4. Bấm nút đó thì chuyện gì xảy ra?
+5. Frontend gọi API nào?
+6. Backend xử lý gì?
+7. ODL hay OVS bị ảnh hưởng?
+8. Kết quả đúng cần nhìn thấy gì?
+9. Nếu sai thì kiểm tra gì?
+10. Câu nói bảo vệ ngắn gọn.
+```
+
+Với code, mình sẽ đi theo 3 lớp:
+
+```text
+Lớp 1: UI / React
+Nút bấm, state, loading, error, render kết quả.
+
+Lớp 2: API / FastAPI
+Endpoint nhận request, gọi service, trả JSON.
+
+Lớp 3: Network / ODL / OVS
+ODL RESTCONF để đọc visibility.
+OVS-direct để enforcement và evidence.
+```
+
+---
+
+# Bài tiếp theo nên học: Chặng 0 — Chuẩn bị lab đúng
+
+Mình đề xuất bài kế tiếp không học thêm page mới ngay, mà làm **Chặng 0: Chuẩn bị lab đúng với code hiện tại**.
+
+Ta sẽ kiểm tra theo thứ tự:
+
+```text
+1. ODL có sống không?
+2. Backend .env đúng chưa?
+3. Backend chạy đúng chưa?
+4. Mininet tạo đúng h1-s1-h2 chưa?
+5. OVS có bridge s1 chưa?
+6. s1 có kết nối controller chưa?
+7. h1 ping h2 baseline có được không?
+8. /api/flows/ovs có đọc được flow không?
+9. Dashboard có phản ánh đúng không?
+```
+
+Sau khi bạn OK chặng 0, mình sẽ sang **Dashboard từng nút bấm**, bắt đầu từ: **Refresh dashboard**, **Open Metrics Center**, **Open Operations Timeline**, **Defense Mode**, **Presenter Mode**, rồi đến các stat card `TOPOLOGY ID / NODES / LINKS / INVENTORY CONNECTORS / INSTALLED FLOWS`.
+
+[1]: https://github.com/phamhungcrab/PROJECT-II/blob/main/backend/app/services/ovs_flow_service.py "PROJECT-II/backend/app/services/ovs_flow_service.py at main · phamhungcrab/PROJECT-II · GitHub"
+[2]: https://raw.githubusercontent.com/phamhungcrab/PROJECT-II/main/frontend/src/pages/DashboardPage.tsx "raw.githubusercontent.com"
+[3]: https://raw.githubusercontent.com/phamhungcrab/PROJECT-II/main/frontend/src/components/layout/AppShell.tsx "raw.githubusercontent.com"

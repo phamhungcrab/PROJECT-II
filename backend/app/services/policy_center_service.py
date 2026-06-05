@@ -23,6 +23,12 @@ from app.models.policy_center import (
     PolicyTemplateRequest,
     PolicyRecord,
 )
+from app.services.odl_client import (
+    OpenDaylightClient,
+    OpenDaylightError,
+    OpenDaylightUnavailable,
+    get_odl_client,
+)
 from app.services.ovs_flow_service import OVSFlowService
 
 
@@ -145,11 +151,13 @@ class PolicyCenterService:
         self,
         store_path: Path | None = None,
         ovs_service: OVSFlowService | None = None,
+        odl_client: OpenDaylightClient | None = None,
     ) -> None:
         self._store_path = store_path or (
             Path(__file__).resolve().parents[2] / "data" / "policy_center.json"
         )
         self._ovs_service = ovs_service or OVSFlowService()
+        self._odl_client = odl_client or get_odl_client()
         self._lock = Lock()
         self._ensure_store()
 
@@ -537,6 +545,24 @@ class PolicyCenterService:
             store = self._load_store_unlocked()
             policies = self._policies_from_store(store)
             result = self._ovs_service.recover_baseline()
+            try:
+                odl_cleanup = self._odl_client.remove_demo_block_ping_policy()
+                odl_cleanup["reachable"] = True
+            except OpenDaylightUnavailable as exc:
+                odl_cleanup = {
+                    "removed": False,
+                    "reachable": False,
+                    "flow_ids": ["9001", "9002"],
+                    "detail": str(exc),
+                }
+            except OpenDaylightError as exc:
+                odl_cleanup = {
+                    "removed": False,
+                    "reachable": True,
+                    "flow_ids": ["9001", "9002"],
+                    "detail": str(exc),
+                }
+            result["odl_config_cleanup"] = odl_cleanup
             timestamp = self._now_iso()
 
             updated_policies: list[PolicyRecord] = []

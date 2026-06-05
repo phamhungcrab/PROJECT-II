@@ -330,3 +330,67 @@ Có thể bổ sung ảnh chụp các màn hình sau vào báo cáo hoặc READM
 - [Bản thảo báo cáo Project 2](/home/hung/sdn-app/docs/PROJECT2_REPORT.md)
 - [Định hướng phát triển](/home/hung/sdn-app/docs/FUTURE_WORK.md)
 - [Câu chuyện sản phẩm](/home/hung/sdn-app/docs/PRODUCT_STORY.md)
+
+lệnh cần thuyết trình:
+
+## 2. Exact startup commands
+
+### OpenDaylight
+
+```bash
+cd ~/sdn/karaf-0.23.0
+./bin/karaf
+```
+
+### Backend
+
+```bash
+cd ~/sdn-app/backend
+source .venv/bin/activate
+uvicorn app.main:app --host 0.0.0.0 --port 8000 --reload
+```
+
+### Frontend
+
+```bash
+cd ~/sdn-app/frontend
+export NVM_DIR="$HOME/.nvm"
+[ -s "$NVM_DIR/nvm.sh" ] && . "$NVM_DIR/nvm.sh"
+nvm use 24
+export VITE_API_BASE_URL=http://192.168.1.4:8000
+npm run dev -- --host 127.0.0.1 --port 5173 --strictPort
+```
+
+### Mininet
+
+```bash
+sudo mn -c
+sudo mn --controller=remote,ip=127.0.0.1,port=6653 --switch ovs,protocols=OpenFlow10 --topo single,2
+```
+
+curl -X POST http://127.0.0.1:8000/api/policies/demo/recover-baseline
+h1 ping -c 3 h2
+sudo ovs-ofctl -O OpenFlow10 dump-flows s1
+sudo ovs-ofctl -O OpenFlow10 del-flows s1 "cookie=0x2329/-1"
+sudo ovs-ofctl -O OpenFlow10 del-flows s1 "cookie=0x232a/-1"
+
+sudo ovs-ofctl -O OpenFlow10 add-flow s1 "cookie=0x1001,priority=10,actions=NORMAL"
+
+sudo ovs-ofctl -O OpenFlow10 dump-flows s1
+
+curl -u admin:admin -i -X DELETE \
+"http://127.0.0.1:8181/rests/data/opendaylight-inventory:nodes/node=openflow%3A1/flow-node-inventory:table=0/flow=9001"
+curl -u admin:admin -i -X DELETE \
+"http://127.0.0.1:8181/rests/data/opendaylight-inventory:nodes/node=openflow%3A1/flow-node-inventory:table=0/flow=9002"
+
+sudo ovs-vsctl show
+mininet> nodes
+mininet> h1 ifconfig
+mininet> h2 ifconfig
+mininet> net
+
+ss -ltnp | grep -E '8000|8181|6653|5173|5174'
+kill -9 PID
+
+curl -s http://127.0.0.1:8000/openapi.json | python3 -m json.tool | grep -n '"/api/'
+http://127.0.0.1:8000/docs

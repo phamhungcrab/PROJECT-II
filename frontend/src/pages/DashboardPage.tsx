@@ -1,5 +1,6 @@
 import { useEffect, useState } from 'react'
 import { Link } from 'react-router-dom'
+import { notifyDashboardRefresh } from '../app/dashboardRefresh'
 import { useDefenseMode } from '../app/defenseMode'
 import { EmptyState } from '../components/state/EmptyState'
 import { ErrorState } from '../components/state/ErrorState'
@@ -16,7 +17,13 @@ import {
   getAlertSeverityTone,
   summarizeAlerts,
 } from '../utils/alertCenter'
-import { classifyNode, formatDateTime, formatLabel, formatNumber } from '../utils/formatters'
+import {
+  classifyNode,
+  formatDateTime,
+  formatLabel,
+  formatNumber,
+  formatPreciseDateTime,
+} from '../utils/formatters'
 
 interface DashboardData {
   health: Awaited<ReturnType<typeof sdnApi.getHealth>>
@@ -96,6 +103,30 @@ function getResultTone(result: string) {
   return 'neutral' as const
 }
 
+function getLatestInventorySnapshot(inventory: DashboardData['inventory'] | undefined) {
+  return inventory?.nodes.reduce<string | undefined>((latest, node) => {
+    const snapshotEnd = node.snapshot?.end?.end
+    if (!snapshotEnd) {
+      return latest
+    }
+
+    if (!latest) {
+      return snapshotEnd
+    }
+
+    const snapshotTime = Date.parse(snapshotEnd)
+    const latestTime = Date.parse(latest)
+
+    if (Number.isNaN(snapshotTime)) {
+      return latest
+    }
+
+    return Number.isNaN(latestTime) || snapshotTime > latestTime
+      ? snapshotEnd
+      : latest
+  }, undefined)
+}
+
 export function DashboardPage() {
   const { defenseMode } = useDefenseMode()
   const [policyLoadingAction, setPolicyLoadingAction] = useState<string | null>(null)
@@ -120,6 +151,7 @@ export function DashboardPage() {
   const [scenarioResult, setScenarioResult] = useState<string | null>(null)
   const [scenarioSummary, setScenarioSummary] = useState<ScenarioSummary | null>(null)
   const [operationLogs, setOperationLogs] = useState<OperationLogEntry[]>([])
+  const [lastDashboardRefresh, setLastDashboardRefresh] = useState<string | null>(null)
 
   const { data, error, isLoading, reload } = useApiResource<DashboardData>(
     async () => {
@@ -147,8 +179,7 @@ export function DashboardPage() {
   const managedTableCount =
     data?.inventory.nodes.reduce((total, node) => total + node.table_count, 0) ??
     0
-  const latestSnapshot =
-    data?.inventory.nodes.find((node) => node.snapshot?.end?.end)?.snapshot?.end?.end
+  const latestSnapshot = getLatestInventorySnapshot(data?.inventory)
   const isPolicyBusy = Boolean(
     policyLoadingAction || scenarioLoadingAction || dashboardPolicyActionLoading,
   )
@@ -482,6 +513,17 @@ export function DashboardPage() {
     void reload()
   }
 
+  async function handleRefreshDashboard() {
+    const result = await reload()
+    if (!result.succeeded) {
+      return
+    }
+
+    const refreshedAt = new Date().toISOString()
+    setLastDashboardRefresh(refreshedAt)
+    notifyDashboardRefresh(refreshedAt)
+  }
+
   async function handleRefreshPolicyState() {
     setDashboardPolicyActionLoading('Refresh Policy State')
     setDashboardPolicyActionError(null)
@@ -689,7 +731,12 @@ export function DashboardPage() {
           >
             Open Operations Timeline
           </Link>
-          <button className="button" type="button" onClick={reload} disabled={isLoading}>
+          <button
+            className="button"
+            type="button"
+            onClick={() => void handleRefreshDashboard()}
+            disabled={isLoading}
+          >
             Refresh dashboard
           </button>
         </div>
@@ -2335,8 +2382,16 @@ export function DashboardPage() {
                   </strong>
                 </div>
                 <div className="metadata-item">
+                  <span className="metadata-label">Last dashboard refresh</span>
+                  <strong className="metadata-value">
+                    {formatPreciseDateTime(lastDashboardRefresh)}
+                  </strong>
+                </div>
+                <div className="metadata-item">
                   <span className="metadata-label">Latest inventory snapshot</span>
-                  <strong className="metadata-value">{formatDateTime(latestSnapshot)}</strong>
+                  <strong className="metadata-value">
+                    {formatPreciseDateTime(latestSnapshot)}
+                  </strong>
                 </div>
               </div>
             </Panel>

@@ -1,0 +1,282 @@
+Đúng, mình ghi lại **cực cụ thể theo máy em hiện tại**. Trong ảnh em đang ở thư mục:
+
+```bash
+/home/hung/sdn
+```
+
+và có thư mục:
+
+```bash
+karaf-0.23.0
+```
+
+Vậy chạy lại project theo **4 Terminal** như sau. Đừng gộp hết vào 1 terminal.
+
+---
+
+# Terminal 1 — Chạy OpenDaylight / Karaf
+
+Mở terminal mới rồi gõ đúng:
+
+```bash
+cd ~/sdn/karaf-0.23.0
+./bin/karaf
+```
+
+Sau đó **để nguyên terminal này mở**.
+
+Nếu nó hiện nhiều log Java/Karaf là bình thường. Đợi khoảng 30 giây đến 1 phút cho OpenDaylight lên hẳn.
+
+Không tắt terminal này.
+
+---
+
+# Terminal 2 — Chạy Mininet
+
+Mở terminal mới.
+
+Vì máy em vừa shutdown đột ngột, nên dọn leftover trước:
+
+```bash
+sudo mn -c
+sudo ovs-vsctl --if-exists del-br s1
+sudo ovs-vsctl show
+```
+
+Sau đó chạy Mininet đúng với code project hiện tại:
+
+```bash
+sudo mn --controller=remote,ip=127.0.0.1,port=6653 \
+  --switch ovs,protocols=OpenFlow10 \
+  --topo single,2
+```
+
+Nếu thành công, nó sẽ vào màn hình:
+
+```text
+mininet>
+```
+
+Giữ nguyên terminal này, đừng tắt.
+
+Trong `mininet>` có thể test nhẹ:
+
+```bash
+nodes
+net
+```
+
+Nếu thấy `h1 h2 s1` là đúng.
+
+Tạm thời **chưa cần ping** vì có thể project đang có rule chặn ping.
+
+---
+
+# Terminal 3 — Chạy Backend FastAPI
+
+Mở terminal mới.
+
+Gõ:
+
+```bash
+cd ~/sdn-app/backend
+source .venv/bin/activate
+cat .env
+```
+
+Nếu `.env` hiện kiểu:
+
+```text
+ODL_BASE_URL=http://127.0.0.1:8181
+ODL_USERNAME=admin
+ODL_PASSWORD=admin
+ODL_TOPOLOGY_ID=flow:1
+```
+
+là ổn.
+
+Sau đó chạy:
+
+```bash
+sudo -v
+python -m uvicorn app.main:app --reload --host 0.0.0.0 --port 8000
+```
+
+Nếu đúng, nó sẽ hiện:
+
+```text
+Uvicorn running on http://0.0.0.0:8000
+Application startup complete.
+```
+
+Giữ terminal này mở.
+
+---
+
+# Terminal 4 — Chạy Frontend
+
+Mở terminal mới.
+
+Gõ:
+
+```bash
+cd ~/sdn-app/frontend
+npm run dev
+```
+
+Nếu nó báo thiếu thư viện thì chạy:
+
+```bash
+npm install
+npm run dev
+```
+
+Nếu thành công, nó sẽ hiện link kiểu:
+
+```text
+http://localhost:5173/
+```
+
+Mở trình duyệt vào:
+
+```text
+http://127.0.0.1:5173
+```
+
+---
+
+# Kiểm tra nhanh sau khi mở xong
+
+Mở thêm terminal hoặc dùng terminal khác, chạy lần lượt:
+
+## 1. Kiểm tra backend
+
+```bash
+curl http://127.0.0.1:8000/api/health
+```
+
+Nếu trả:
+
+```json
+{"status":"ok", ...}
+```
+
+là backend sống.
+
+---
+
+## 2. Kiểm tra OVS bridge `s1`
+
+```bash
+sudo ovs-vsctl show
+```
+
+Kỳ vọng thấy:
+
+```text
+Bridge s1
+    Controller "tcp:127.0.0.1:6653"
+        is_connected: true
+    Port s1-eth1
+    Port s1-eth2
+```
+
+Nếu có `Bridge s1` và `is_connected: true` là tốt.
+
+---
+
+## 3. Kiểm tra flow live từ backend
+
+```bash
+curl http://127.0.0.1:8000/api/flows/ovs
+```
+
+Nếu trả JSON có:
+
+```text
+bridge: s1
+protocol: OpenFlow10
+flows: [...]
+```
+
+là backend gọi được OVS.
+
+---
+
+## 4. Kiểm tra OpenDaylight RESTCONF
+
+```bash
+curl -u admin:admin \
+  -H "Accept: application/json" \
+  http://127.0.0.1:8181/rests/data/opendaylight-inventory:nodes
+```
+
+Nếu thấy `openflow:1`, `s1-eth1`, `s1-eth2` là ODL thấy switch.
+
+---
+
+# Thứ tự nhớ cực ngắn
+
+Em cứ nhớ:
+
+```text
+Terminal 1: ODL/Karaf
+Terminal 2: Mininet
+Terminal 3: Backend FastAPI
+Terminal 4: Frontend React
+```
+
+Lệnh chính:
+
+```bash
+# 1. ODL
+cd ~/sdn/karaf-0.23.0
+./bin/karaf
+```
+
+```bash
+# 2. Mininet
+sudo mn -c
+sudo ovs-vsctl --if-exists del-br s1
+sudo mn --controller=remote,ip=127.0.0.1,port=6653 \
+  --switch ovs,protocols=OpenFlow10 \
+  --topo single,2
+```
+
+```bash
+# 3. Backend
+cd ~/sdn-app/backend
+source .venv/bin/activate
+sudo -v
+python -m uvicorn app.main:app --reload --host 0.0.0.0 --port 8000
+```
+
+```bash
+# 4. Frontend
+cd ~/sdn-app/frontend
+npm run dev
+```
+
+---
+
+# Lưu ý quan trọng
+
+Backend **không dùng npm**. Không chạy `npm install` trong:
+
+```bash
+~/sdn-app/backend
+```
+
+Chỉ chạy npm ở:
+
+```bash
+~/sdn-app/frontend
+```
+
+Và nếu sau này bấm Apply policy trên web bị lỗi 500 do sudo, chạy lại:
+
+```bash
+sudo -v
+```
+
+rồi restart backend.

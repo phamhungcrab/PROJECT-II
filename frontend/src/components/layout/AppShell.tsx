@@ -1,16 +1,16 @@
 import { useEffect, useRef, useState } from 'react'
 import { NavLink, Outlet, useLocation } from 'react-router-dom'
+import {
+  dashboardRefreshEventName,
+  type DashboardRefreshEventDetail,
+} from '../../app/dashboardRefresh'
 import { presenterHotkeyLabel } from '../../app/presenterDirector'
 import type { DefenseModeOutletContext } from '../../app/defenseMode'
 import { navigationItems } from '../../app/navigation'
 import { appConfig } from '../../config/appConfig'
+import { formatPreciseDateTime } from '../../utils/formatters'
 import { PresenterRail } from '../presenter/PresenterRail'
 import { StatusBadge } from '../ui/StatusBadge'
-
-const checkedAtFormatter = new Intl.DateTimeFormat('en-US', {
-  dateStyle: 'medium',
-  timeStyle: 'short',
-})
 
 function readStoredFlag(key: string) {
   if (typeof window === 'undefined') {
@@ -33,6 +33,7 @@ export function AppShell() {
   const [spotlightMode, setSpotlightMode] = useState(() => {
     return readStoredFlag('sdn-presenter-spotlight')
   })
+  const [lastDashboardRefresh, setLastDashboardRefresh] = useState<string | null>(null)
   const mainShellRef = useRef<HTMLDivElement | null>(null)
   const location = useLocation()
   const currentPage =
@@ -113,6 +114,19 @@ export function AppShell() {
       window.removeEventListener('keydown', handlePresenterHotkey)
     }
   }, [defenseMode])
+
+  useEffect(() => {
+    const handleDashboardRefresh = (event: Event) => {
+      const refreshEvent = event as CustomEvent<DashboardRefreshEventDetail>
+      setLastDashboardRefresh(refreshEvent.detail.refreshedAt)
+    }
+
+    window.addEventListener(dashboardRefreshEventName, handleDashboardRefresh)
+
+    return () => {
+      window.removeEventListener(dashboardRefreshEventName, handleDashboardRefresh)
+    }
+  }, [])
 
   function handleTogglePresenterMode() {
     setPresenterMode((current) => {
@@ -207,8 +221,12 @@ export function AppShell() {
               <strong>FastAPI + OpenDaylight</strong>
             </div>
             <div className="meta-card">
-              <span>Checked</span>
-              <strong>{checkedAtFormatter.format(new Date())}</strong>
+              <span>Last dashboard refresh</span>
+              <strong>
+                {lastDashboardRefresh
+                  ? formatPreciseDateTime(lastDashboardRefresh)
+                  : 'Not refreshed yet'}
+              </strong>
             </div>
             <div className="meta-card meta-card--defense">
               <span>Presentation</span>

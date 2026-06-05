@@ -5,6 +5,15 @@ const dateTimeFormatter = new Intl.DateTimeFormat('en-US', {
   dateStyle: 'medium',
   timeStyle: 'short',
 })
+const preciseDateTimeFormatter = new Intl.DateTimeFormat('en-US', {
+  year: 'numeric',
+  month: 'short',
+  day: '2-digit',
+  hour: '2-digit',
+  minute: '2-digit',
+  second: '2-digit',
+  fractionalSecondDigits: 3,
+})
 
 export function formatNumber(value: number | string | null | undefined) {
   if (value === null || value === undefined || value === '') {
@@ -26,6 +35,17 @@ export function formatDateTime(value: string | null | undefined) {
   return Number.isNaN(parsedDate.getTime())
     ? value
     : dateTimeFormatter.format(parsedDate)
+}
+
+export function formatPreciseDateTime(value: string | null | undefined) {
+  if (!value) {
+    return 'N/A'
+  }
+
+  const parsedDate = new Date(value)
+  return Number.isNaN(parsedDate.getTime())
+    ? value
+    : preciseDateTimeFormatter.format(parsedDate)
 }
 
 export function formatValue(value: unknown) {
