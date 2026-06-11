@@ -1,6 +1,7 @@
 from fastapi import FastAPI
 from fastapi.middleware.cors import CORSMiddleware
 
+from app.api.routes.demo import router as demo_router
 from app.api.routes.flows import router as flows_router
 from app.api.routes.health import router as health_router
 from app.api.routes.inventory import router as inventory_router
@@ -31,6 +32,7 @@ def create_app() -> FastAPI:
     application.include_router(inventory_router)
     application.include_router(flows_router)
     application.include_router(policies_router)
+    application.include_router(demo_router)
     return application
 
 

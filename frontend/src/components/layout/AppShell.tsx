@@ -225,7 +225,7 @@ export function AppShell() {
               <strong>
                 {lastDashboardRefresh
                   ? formatPreciseDateTime(lastDashboardRefresh)
-                  : 'Not refreshed yet'}
+                  : 'N/A'}
               </strong>
             </div>
             <div className="meta-card meta-card--defense">

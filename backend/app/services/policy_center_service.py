@@ -131,6 +131,8 @@ POLICY_FLOW_LABELS: dict[str, tuple[str, ...]] = {
     "isolate_h1": ("Isolate H1 A->B", "Isolate H1 B->A"),
 }
 
+SEED_POLICY_IDS = tuple(POLICY_DEFINITIONS.keys())
+
 DEMO_HOSTS: dict[str, dict[str, str]] = {
     "h1": {"label": "H1", "ip": "10.0.0.1"},
     "h2": {"label": "H2", "ip": "10.0.0.2"},
@@ -545,23 +547,7 @@ class PolicyCenterService:
             store = self._load_store_unlocked()
             policies = self._policies_from_store(store)
             result = self._ovs_service.recover_baseline()
-            try:
-                odl_cleanup = self._odl_client.remove_demo_block_ping_policy()
-                odl_cleanup["reachable"] = True
-            except OpenDaylightUnavailable as exc:
-                odl_cleanup = {
-                    "removed": False,
-                    "reachable": False,
-                    "flow_ids": ["9001", "9002"],
-                    "detail": str(exc),
-                }
-            except OpenDaylightError as exc:
-                odl_cleanup = {
-                    "removed": False,
-                    "reachable": True,
-                    "flow_ids": ["9001", "9002"],
-                    "detail": str(exc),
-                }
+            odl_cleanup = self._cleanup_odl_demo_config_flows()
             result["odl_config_cleanup"] = odl_cleanup
             timestamp = self._now_iso()
 
@@ -617,6 +603,223 @@ class PolicyCenterService:
                 )
             self._save_store_unlocked(updated_policies, events, evidence)
             return result
+
+    def reset_demo_clean_state(self) -> dict[str, object]:
+        with self._lock:
+            store = self._load_store_unlocked()
+            existing_policies = self._policies_from_store(store)
+            existing_events = self._events_from_store(store)
+            existing_evidence = self._evidence_from_store(store)
+
+            result = self._ovs_service.recover_baseline()
+            odl_cleanup = self._cleanup_odl_demo_config_flows()
+            result["odl_config_cleanup"] = odl_cleanup
+
+            timestamp = self._now_iso()
+            archived_logs = self._archive_demo_history_unlocked(
+                store=store,
+                timestamp=timestamp,
+            )
+            clean_policies = self._build_clean_demo_policies(
+                existing_policies,
+                timestamp=timestamp,
+            )
+            baseline_policy = self._find_policy(clean_policies, "baseline_forwarding")
+            audit_event = self._build_event(
+                policy=baseline_policy,
+                action="demo_clean_state_initialized",
+                result=self._event_result(baseline_policy),
+                timestamp=timestamp,
+                message=(
+                    "Demo clean state initialized: baseline forwarding is enabled; "
+                    "restrictive demo policies and stale logs were cleared."
+                ),
+            )
+            self._save_store_unlocked(clean_policies, [audit_event], [])
+
+            cleared_logs = [
+                "policy_events",
+                "policy_evidence",
+                "policy_verifications",
+                "operations_timeline",
+            ]
+            preserved_policies = [policy.id for policy in clean_policies]
+            odl_config_clean = odl_cleanup.get("removed") is True
+            baseline_ready = (
+                result.get("recovered") is True
+                and odl_config_clean
+                and baseline_policy.desired_state == PolicyDesiredState.ENABLED
+                and baseline_policy.live_state == PolicyLiveState.ENFORCED
+                and baseline_policy.compliance == PolicyCompliance.COMPLIANT
+            )
+
+            return {
+                "reset": True,
+                "recovered": result.get("recovered") is True,
+                "baseline_ready": baseline_ready,
+                "odl_config_clean": odl_config_clean,
+                "cleared_logs": cleared_logs,
+                "cleared_log_counts": {
+                    "policy_events": len(existing_events),
+                    "policy_evidence": len(existing_evidence),
+                    "policy_verifications": sum(
+                        1 for snapshot in existing_evidence if snapshot.action == "verify"
+                    ),
+                    "operations_timeline": len(existing_events) + len(existing_evidence),
+                },
+                "archived_logs": archived_logs,
+                "preserved_policies": preserved_policies,
+                "preserved_policy_templates": [
+                    policy.id
+                    for policy in clean_policies
+                    if policy.origin == PolicyOrigin.TEMPLATE
+                ],
+                "policy_state": {
+                    policy.id: {
+                        "desired_state": policy.desired_state,
+                        "live_state": policy.live_state,
+                        "compliance": policy.compliance,
+                        "enabled": policy.enabled,
+                    }
+                    for policy in clean_policies
+                    if policy.id in SEED_POLICY_IDS
+                },
+                "audit_event": audit_event,
+                "odl_config_cleanup": odl_cleanup,
+                "recovery": result,
+            }
+
+    def _cleanup_odl_demo_config_flows(self) -> dict[str, object]:
+        try:
+            odl_cleanup = self._odl_client.remove_demo_block_ping_policy()
+            odl_cleanup["reachable"] = True
+            return odl_cleanup
+        except OpenDaylightUnavailable as exc:
+            return {
+                "removed": False,
+                "reachable": False,
+                "flow_ids": ["9001", "9002"],
+                "detail": str(exc),
+            }
+        except OpenDaylightError as exc:
+            return {
+                "removed": False,
+                "reachable": True,
+                "flow_ids": ["9001", "9002"],
+                "detail": str(exc),
+            }
+
+    def _build_clean_demo_policies(
+        self,
+        existing_policies: list[PolicyRecord],
+        *,
+        timestamp: str,
+    ) -> list[PolicyRecord]:
+        existing_by_id = {policy.id: policy for policy in existing_policies}
+        clean_policies: list[PolicyRecord] = []
+
+        for policy_id, definition in POLICY_DEFINITIONS.items():
+            existing_policy = existing_by_id.get(policy_id)
+            version = existing_policy.version + 1 if existing_policy is not None else 1
+            created_at = existing_policy.created_at if existing_policy is not None else timestamp
+            is_baseline = policy_id == "baseline_forwarding"
+            clean_policies.append(
+                PolicyRecord(
+                    id=policy_id,
+                    name=str(definition["name"]),
+                    type=str(definition["type"]),
+                    description=str(definition["description"]),
+                    target=str(definition["target"]),
+                    scope=str(definition["scope"]),
+                    priority=int(definition["priority"]),
+                    enabled=is_baseline,
+                    desired_state=(
+                        PolicyDesiredState.ENABLED
+                        if is_baseline
+                        else PolicyDesiredState.DISABLED
+                    ),
+                    live_state=(
+                        PolicyLiveState.ENFORCED
+                        if is_baseline
+                        else PolicyLiveState.NOT_ENFORCED
+                    ),
+                    compliance=PolicyCompliance.COMPLIANT,
+                    created_at=created_at,
+                    updated_at=timestamp,
+                    last_applied_at=timestamp if is_baseline else None,
+                    last_verified_at=timestamp,
+                    version=version,
+                    origin=PolicyOrigin.SEEDED,
+                    execution_status=PolicyExecutionStatus.SUPPORTED,
+                )
+            )
+
+        for policy in existing_policies:
+            if policy.id in SEED_POLICY_IDS:
+                continue
+
+            definition = self._definition_for_policy(policy)
+            clean_policies.append(
+                self._copy_policy(
+                    policy,
+                    enabled=False,
+                    desired_state=PolicyDesiredState.DISABLED,
+                    live_state=PolicyLiveState.NOT_ENFORCED,
+                    compliance=PolicyCompliance.COMPLIANT,
+                    updated_at=timestamp,
+                    last_applied_at=None,
+                    last_verified_at=timestamp,
+                    version=policy.version + 1,
+                    execution_status=definition["execution_status"],
+                    execution_reason=definition.get("execution_reason"),
+                )
+            )
+
+        return clean_policies
+
+    def _archive_demo_history_unlocked(
+        self,
+        *,
+        store: dict[str, object],
+        timestamp: str,
+    ) -> dict[str, object]:
+        events = store.get("events")
+        evidence = store.get("evidence")
+        raw_events = events if isinstance(events, list) else []
+        raw_evidence = evidence if isinstance(evidence, list) else []
+
+        if not raw_events and not raw_evidence:
+            return {
+                "archived": False,
+                "path": None,
+                "reason": "No existing policy events or evidence to archive.",
+            }
+
+        archive_dir = self._store_path.parent / "archive"
+        archive_dir.mkdir(parents=True, exist_ok=True)
+        safe_timestamp = (
+            timestamp.replace("+", "Z")
+            .replace(":", "")
+            .replace("-", "")
+            .replace(".", "")
+        )
+        archive_path = archive_dir / f"demo_reset_{safe_timestamp}.json"
+        archive_payload = {
+            "archived_at": timestamp,
+            "source": str(self._store_path),
+            "events": raw_events,
+            "evidence": raw_evidence,
+        }
+        archive_path.write_text(
+            json.dumps(archive_payload, indent=2, sort_keys=True),
+            encoding="utf-8",
+        )
+        return {
+            "archived": True,
+            "path": str(archive_path),
+            "event_count": len(raw_events),
+            "evidence_count": len(raw_evidence),
+        }
 
     def _ensure_store(self) -> None:
         with self._lock:

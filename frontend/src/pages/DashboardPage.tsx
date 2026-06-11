@@ -152,6 +152,7 @@ export function DashboardPage() {
   const [scenarioSummary, setScenarioSummary] = useState<ScenarioSummary | null>(null)
   const [operationLogs, setOperationLogs] = useState<OperationLogEntry[]>([])
   const [lastDashboardRefresh, setLastDashboardRefresh] = useState<string | null>(null)
+  const [dashboardRefreshSource, setDashboardRefreshSource] = useState<'Initial page load' | 'Manual refresh' | null>(null)
 
   const { data, error, isLoading, reload } = useApiResource<DashboardData>(
     async () => {
@@ -176,6 +177,7 @@ export function DashboardPage() {
     ) ?? 0
   const managedFlowCount =
     data?.inventory.nodes.reduce((total, node) => total + node.flow_count, 0) ?? 0
+  const displayedInstalledFlowCount = ovsEvidence?.flow_count ?? managedFlowCount
   const managedTableCount =
     data?.inventory.nodes.reduce((total, node) => total + node.table_count, 0) ??
     0
@@ -505,6 +507,15 @@ export function DashboardPage() {
     void Promise.all([loadPolicyStatus(), loadOvsEvidence()])
   }, [])
 
+  useEffect(() => {
+    if (data && !dashboardRefreshSource) {
+      const now = new Date().toISOString()
+      setLastDashboardRefresh(now)
+      setDashboardRefreshSource('Initial page load')
+      notifyDashboardRefresh(now)
+    }
+  }, [data, dashboardRefreshSource])
+
   async function refreshOperationalState() {
     policySummaryQuery.reload()
     policyEventsQuery.reload()
@@ -521,6 +532,7 @@ export function DashboardPage() {
 
     const refreshedAt = new Date().toISOString()
     setLastDashboardRefresh(refreshedAt)
+    setDashboardRefreshSource('Manual refresh')
     notifyDashboardRefresh(refreshedAt)
   }
 
@@ -596,6 +608,55 @@ export function DashboardPage() {
 
       setDashboardPolicyActionError(message)
       appendOperationLog('Verify Key Policies', 'failed')
+    } finally {
+      setDashboardPolicyActionLoading(null)
+    }
+  }
+
+  async function handleResetDemoState() {
+    setDashboardPolicyActionLoading('Reset Demo State')
+    setDashboardPolicyActionError(null)
+    setDashboardPolicyActionMessage(null)
+    setPolicyError(null)
+    setScenarioError(null)
+    setOperationLogs([])
+
+    try {
+      const payload = await policyApi.resetCleanDemoState()
+      setPolicyResult(JSON.stringify(payload, null, 2))
+      setScenarioResult(
+        JSON.stringify(
+          {
+            scenario: 'Reset demo state',
+            completed: payload.reset,
+            baseline_ready: payload.baseline_ready,
+            cleared_logs: payload.cleared_logs,
+            preserved_policies: payload.preserved_policies,
+          },
+          null,
+          2,
+        ),
+      )
+      setScenarioSummary({
+        name: 'Reset demo state',
+        completed: payload.reset && payload.recovered && payload.baseline_ready,
+        stepCount: 1,
+      })
+      setDashboardPolicyActionMessage(
+        payload.baseline_ready
+          ? 'Demo state reset: baseline is ready, restrictive policies are disabled, and old logs were cleared.'
+          : 'Demo reset completed, but baseline readiness needs review.',
+      )
+      appendOperationLog('Reset Demo State', 'success')
+      await refreshOperationalState()
+    } catch (requestError) {
+      const message =
+        requestError instanceof Error
+          ? requestError.message
+          : 'Unable to reset demo state'
+
+      setDashboardPolicyActionError(message)
+      appendOperationLog('Reset Demo State', 'failed')
     } finally {
       setDashboardPolicyActionLoading(null)
     }
@@ -799,8 +860,12 @@ export function DashboardPage() {
             />
             <StatCard
               label="Installed Flows"
-              value={formatNumber(managedFlowCount)}
-              helper={`${formatNumber(managedTableCount)} exposed tables`}
+              value={formatNumber(displayedInstalledFlowCount)}
+              helper={
+                ovsEvidence
+                  ? `Live OVS evidence on ${ovsEvidence.bridge}`
+                  : `${formatNumber(managedTableCount)} exposed tables`
+              }
               tone="success"
             />
           </div>
@@ -1381,6 +1446,17 @@ export function DashboardPage() {
               }
             >
               <div className="form-actions">
+                <button
+                  className="button button--ghost"
+                  type="button"
+                  disabled={isPolicyBusy}
+                  onClick={() => void handleResetDemoState()}
+                  title="Demo setup only: restore baseline and clear stale audit/evidence history."
+                >
+                  {dashboardPolicyActionLoading === 'Reset Demo State'
+                    ? 'Resetting...'
+                    : 'Reset demo state'}
+                </button>
                 <button
                   className="button button--ghost"
                   type="button"
@@ -2381,17 +2457,38 @@ export function DashboardPage() {
                     {data.health.controller.topology_id}
                   </strong>
                 </div>
-                <div className="metadata-item">
-                  <span className="metadata-label">Last dashboard refresh</span>
-                  <strong className="metadata-value">
-                    {formatPreciseDateTime(lastDashboardRefresh)}
-                  </strong>
-                </div>
-                <div className="metadata-item">
-                  <span className="metadata-label">Latest inventory snapshot</span>
-                  <strong className="metadata-value">
-                    {formatPreciseDateTime(latestSnapshot)}
-                  </strong>
+                <div className="metadata-item" style={{ gridColumn: 'span 3' }}>
+                  <span className="metadata-label">Dashboard data freshness</span>
+                  <div style={{ display: 'grid', gap: '14px', marginTop: '12px' }}>
+                    <div style={{ display: 'grid', gridTemplateColumns: 'repeat(auto-fit, minmax(240px, 1fr))', gap: '16px' }}>
+                      <div>
+                        <div style={{ fontSize: '0.8rem', color: 'var(--text-muted)', textTransform: 'uppercase', letterSpacing: '0.04em' }}>
+                          Last dashboard data load
+                        </div>
+                        <strong className="metadata-value" style={{ marginTop: '4px', display: 'block' }}>
+                          {formatPreciseDateTime(lastDashboardRefresh)}
+                        </strong>
+                        {dashboardRefreshSource && (
+                          <span style={{ fontSize: '0.74rem', color: 'var(--text-secondary)', display: 'block', marginTop: '2px' }}>
+                            Source: {dashboardRefreshSource}
+                          </span>
+                        )}
+                      </div>
+
+                      <div>
+                        <div style={{ fontSize: '0.8rem', color: 'var(--text-muted)', textTransform: 'uppercase', letterSpacing: '0.04em' }}>
+                          Latest ODL inventory snapshot
+                        </div>
+                        <strong className="metadata-value" style={{ marginTop: '4px', display: 'block' }}>
+                          {formatPreciseDateTime(latestSnapshot)}
+                        </strong>
+                      </div>
+                    </div>
+
+                    <p className="entity-list-meta" style={{ fontSize: '0.74rem', color: 'var(--text-muted)', lineHeight: '1.4', borderTop: '1px solid var(--border-soft)', paddingTop: '10px', marginTop: '4px', marginBottom: 0 }}>
+                      Dashboard data load is when the frontend finished refreshing API data. ODL inventory snapshot is when OpenDaylight last collected switch inventory.
+                    </p>
+                  </div>
                 </div>
               </div>
             </Panel>

@@ -170,3 +170,25 @@ export interface DemoPolicyStatusResponse {
   block_http_enabled: boolean
   isolate_h1_enabled: boolean
 }
+
+export interface DemoResetCleanStateResponse {
+  reset: boolean
+  recovered: boolean
+  baseline_ready: boolean
+  odl_config_clean?: boolean
+  cleared_logs: string[]
+  preserved_policies: string[]
+  preserved_policy_templates?: string[]
+  policy_state?: Record<
+    string,
+    {
+      desired_state: PolicyDesiredState
+      live_state: PolicyLiveState
+      compliance: PolicyCompliance
+      enabled: boolean
+    }
+  >
+  audit_event?: PolicyEventRecord
+  odl_config_cleanup?: Record<string, unknown>
+  recovery?: Record<string, unknown>
+}

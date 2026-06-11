@@ -354,10 +354,13 @@ uvicorn app.main:app --host 0.0.0.0 --port 8000 --reload
 
 ```bash
 cd ~/sdn-app/frontend
+
 export NVM_DIR="$HOME/.nvm"
 [ -s "$NVM_DIR/nvm.sh" ] && . "$NVM_DIR/nvm.sh"
 nvm use 24
-export VITE_API_BASE_URL=http://192.168.1.4:8000
+
+export VITE_API_BASE_URL=http://127.0.0.1:8000
+
 npm run dev -- --host 127.0.0.1 --port 5173 --strictPort
 ```
 

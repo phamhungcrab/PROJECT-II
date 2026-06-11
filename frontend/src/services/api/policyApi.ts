@@ -1,5 +1,6 @@
 import type {
   DemoPolicyStatusResponse,
+  DemoResetCleanStateResponse,
   PolicyActionResponse,
   PolicyDriftSummaryResponse,
   PolicyEvidenceResponse,
@@ -129,6 +130,10 @@ export const policyApi = {
     apiRequest<DemoPolicyStatusResponse>('/api/policies/demo/block-ping/status'),
   recoverBaselineDemo: () =>
     apiRequest<Record<string, unknown>>('/api/policies/demo/recover-baseline', {
+      method: 'POST',
+    }),
+  resetCleanDemoState: () =>
+    apiRequest<DemoResetCleanStateResponse>('/api/demo/reset-clean-state', {
       method: 'POST',
     }),
 }
