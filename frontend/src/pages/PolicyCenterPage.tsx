@@ -147,6 +147,31 @@ function getPreviewExpectedCookies(preview: PolicyPreview | null | undefined) {
   return Array.isArray(preview?.expected_cookies) ? preview.expected_cookies : []
 }
 
+function normalizeCookie(value: string | number | null | undefined) {
+  if (value === null || value === undefined) {
+    return ''
+  }
+
+  const raw = String(value).trim().toLowerCase()
+  if (!raw) {
+    return ''
+  }
+
+  try {
+    if (raw.startsWith('0x')) {
+      return BigInt(raw).toString(10)
+    }
+
+    if (/^\d+$/.test(raw)) {
+      return BigInt(raw).toString(10)
+    }
+  } catch {
+    return raw
+  }
+
+  return raw
+}
+
 function getPreviewExpectedFlowLabels(
   preview: PolicyPreview | null | undefined,
 ) {
@@ -446,6 +471,18 @@ export function PolicyCenterPage() {
   const previewNotes = getPreviewNotes(policyPreview)
   const previewExpectedCookies = getPreviewExpectedCookies(policyPreview)
   const previewExpectedFlowLabels = getPreviewExpectedFlowLabels(policyPreview)
+  const expectedCookieEntries = policyExpectation.cookies
+    .map((cookie) => ({
+      raw: cookie,
+      normalized: normalizeCookie(cookie),
+    }))
+    .filter((cookie) => cookie.normalized)
+  const expectedCookieSet = new Set(
+    expectedCookieEntries.map((cookie) => cookie.normalized),
+  )
+  const expectedCookieByNormalized = new Map(
+    expectedCookieEntries.map((cookie) => [cookie.normalized, cookie.raw]),
+  )
   const controllerFlows =
     controllerFlowQuery.data?.tables.flatMap((table) =>
       (table.flows ?? []).map((flow) => ({
@@ -456,9 +493,21 @@ export function PolicyCenterPage() {
         actions: summarizeControllerActions(flow),
       })),
     ) ?? []
-  const relatedControllerFlows = controllerFlows.filter((flow) =>
-    policyExpectation.cookies.includes(flow.cookie),
-  )
+  const relatedControllerFlows = controllerFlows
+    .map((flow) => {
+      const normalizedCookie = normalizeCookie(flow.cookie)
+      return {
+        ...flow,
+        normalized_cookie: normalizedCookie,
+        matched_expected_cookie:
+          expectedCookieByNormalized.get(normalizedCookie) ?? null,
+      }
+    })
+    .filter(
+      (flow) =>
+        flow.normalized_cookie.length > 0 &&
+        expectedCookieSet.has(flow.normalized_cookie),
+    )
   const controllerEvidenceStatus =
     selectedPolicyExecutionStatus === 'PREVIEW_ONLY'
       ? {
@@ -472,15 +521,15 @@ export function PolicyCenterPage() {
         ? {
             label: 'Observed',
             tone: 'success' as const,
-            summary: `${formatNumber(relatedControllerFlows.length)} exact controller entr${
+            summary: `${formatNumber(relatedControllerFlows.length)} controller entr${
               relatedControllerFlows.length === 1 ? 'y' : 'ies'
-            } matched the expected policy cookies on ${appConfig.defaultFlowNodeId}.`,
+            } matched the expected policy cookies on ${appConfig.defaultFlowNodeId} after cookie normalization.`,
           }
         : controllerFlowQuery.data
           ? {
               label: 'Partial',
               tone: 'warning' as const,
-              summary: `ODL flow data is available for ${appConfig.defaultFlowNodeId}, but no exact controller cookie match was confirmed for this policy. Current demo enforcement may be switch-direct.`,
+              summary: `ODL flow data is available for ${appConfig.defaultFlowNodeId}, but no normalized controller cookie match was confirmed for this policy. Current demo enforcement may be switch-direct.`,
             }
           : controllerFlowQuery.error
             ? {
@@ -594,7 +643,7 @@ export function PolicyCenterPage() {
   const comparisonSummary = selectedPolicy
     ? selectedPolicyExecutionStatus === 'PREVIEW_ONLY'
       ? `Policy intent is visible in Policy Center, but this template remains preview-only. No controller or switch-side execution mapping is expected until a future live mapping is implemented.`
-      : `Policy intent is visible in Policy Center. Controller flow view on ${appConfig.defaultFlowNodeId} shows ${formatNumber(relatedControllerFlows.length)} exact related entr${
+      : `Policy intent is visible in Policy Center. Controller flow view on ${appConfig.defaultFlowNodeId} shows ${formatNumber(relatedControllerFlows.length)} normalized related entr${
           relatedControllerFlows.length === 1 ? 'y' : 'ies'
         }. Switch evidence shows ${formatNumber(
           switchEvidenceCount,
@@ -1506,6 +1555,11 @@ export function PolicyCenterPage() {
                                       <p className="entity-list-meta">
                                         Cookie {flow.cookie} · Priority {formatNumber(flow.priority)}
                                       </p>
+                                      {flow.matched_expected_cookie ? (
+                                        <p className="entity-list-meta">
+                                          Matches expected {flow.matched_expected_cookie}
+                                        </p>
+                                      ) : null}
                                       <p className="entity-list-meta">{flow.actions}</p>
                                     </div>
                                     <span className="entity-list-trailing">
@@ -1518,7 +1572,7 @@ export function PolicyCenterPage() {
                               <p className="entity-list-meta" style={{ marginTop: '12px' }}>
                                 {selectedPolicyExecutionStatus === 'PREVIEW_ONLY'
                                   ? 'No controller-side flow IDs are expected because this policy has no live execution mapping.'
-                                  : 'No exact controller-side flow IDs or cookies were confirmed for this policy.'}
+                                  : 'No normalized controller-side flow IDs or cookies were confirmed for this policy.'}
                               </p>
                             )}
                           </>
